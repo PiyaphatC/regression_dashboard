@@ -317,13 +317,16 @@ def render_whatif(df: pd.DataFrame, coef_df: pd.DataFrame,
     # Reset sliders to the new station's original values when the station changes
     if st.session_state.get("_whatif_prev_station") != base_station:
         for feat in selected_features:
-            slider_key = f"slider_{feat}"
-            if slider_key in st.session_state:
-                del st.session_state[slider_key]
+            st.session_state[f"slider_{feat}"] = base_feat_vals.get(feat, 0.0)
         st.session_state["_whatif_prev_station"] = base_station
 
     st.markdown("---")
     st.markdown("**Adjust feature values:**")
+    if st.button("↺ Reset to base values", key="whatif_reset"):
+        for feat in selected_features:
+            st.session_state[f"slider_{feat}"] = base_feat_vals.get(feat, 0.0)
+        st.rerun()
+
     new_vals: dict[str, float] = {}
     slider_cols = st.columns(min(3, len(selected_features)))
     for i, feat in enumerate(selected_features):
