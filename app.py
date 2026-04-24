@@ -189,15 +189,176 @@ def render_model_results(model_result: ModelResult, coef_df: pd.DataFrame,
     c4.metric("F-statistic",  f"{model_result.fvalue:.2f}")
     c5.metric("F p-value",    f"{model_result.f_pvalue:.4f}")
 
+    # ── Coefficient chart ─────────────────────────────────────────────────
+    st.subheader("Elasticity Coefficients (95% CI)")
+    plot_df = coef_df[coef_df["variable"] != "const"].copy()
+    plot_df = plot_df.sort_values("coef", key=abs, ascending=True)
+    bar_colors = [
+        "#4ade80" if (r["significant"] and r["coef"] > 0)
+        else ("#f87171" if (r["significant"] and r["coef"] < 0) else "#94a3b8")
+        for _, r in plot_df.iterrows()
+    ]
+    fig_coef = go.Figure(go.Bar(
+        y=plot_df["variable"],
+        x=plot_df["coef"],
+        orientation="h",
+        marker_color=bar_colors,
+        error_x=dict(
+            type="data", symmetric=False,
+            array=(plot_df["ci_hi"] - plot_df["coef"]).tolist(),
+            arrayminus=(plot_df["coef"] - plot_df["ci_lo"]).tolist(),
+            color="#475569", thickness=2,
+        ),
+        hovertemplate="<b>%{y}</b><br>Elasticity: %{x:.4f}<extra></extra>",
+    ))
+    fig_coef.add_vline(x=0, line_color="#475569", line_width=1)
+    fig_coef.update_layout(
+        plot_bgcolor="#0f172a", paper_bgcolor="#0f172a", font_color="#e2e8f0",
+        xaxis_title="Elasticity estimate",
+        height=max(300, len(plot_df) * 38),
+        margin=dict(l=0, r=20, t=10, b=40),
+    )
+    st.plotly_chart(fig_coef, use_container_width=True)
+
+    # ── Station table ─────────────────────────────────────────────────────
+    st.subheader("Stations — Actual vs Predicted")
+    station_df = df[["station_name", "source", "entry"]].copy()
+    station_df["predicted"] = df.apply(
+        lambda row: predict_ridership(coef_df, {f: row[f] for f in selected_features}, log_offset),
+        axis=1,
+    )
+    station_df["residual"]    = station_df["entry"] - station_df["predicted"]
+    station_df["pct_error_%"] = (station_df["residual"] / station_df["entry"] * 100).round(1)
+    station_df[["entry", "predicted", "residual"]] = (
+        station_df[["entry", "predicted", "residual"]].round(0).astype(int)
+    )
+    station_df = station_df.rename(columns={
+        "station_name": "Station", "source": "Source",
+        "entry": "Actual",        "predicted": "Predicted",
+        "residual": "Residual",
+    })
+    st.dataframe(station_df, use_container_width=True, height=420)
+
 
 def render_station_explorer(df: pd.DataFrame, coef_df: pd.DataFrame,
                              selected_features: list[str], log_offset: float) -> None:
-    pass  # Task 6
+    st.subheader("Station Explorer")
+    selected_station = st.selectbox("Select a station", df["station_name"].tolist(), key="explorer_station")
+    row = df[df["station_name"] == selected_station].iloc[0]
+    feat_data = {f: float(row[f]) for f in selected_features if f in row.index}
+
+    col_info, col_pred = st.columns(2)
+    with col_info:
+        st.markdown("**Station Info**")
+        st.write(f"Source: `{row['source']}`")
+        if "line_code" in row.index:
+            st.write(f"Line code: `{row['line_code']}`")
+        st.markdown("**Feature Values**")
+        st.dataframe(
+            pd.DataFrame({"Feature": list(feat_data.keys()), "Value": list(feat_data.values())}),
+            use_container_width=True, hide_index=True,
+        )
+
+    with col_pred:
+        actual    = float(row["entry"])
+        predicted = predict_ridership(coef_df, feat_data, log_offset)
+        residual  = actual - predicted
+        pct_err   = residual / actual * 100
+        st.markdown("**Prediction**")
+        m1, m2 = st.columns(2)
+        m1.metric("Actual ridership",    f"{actual:,.0f}")
+        m2.metric("Predicted ridership", f"{predicted:,.0f}")
+        m3, m4 = st.columns(2)
+        m3.metric("Residual", f"{residual:+,.0f}")
+        m4.metric("% Error",  f"{pct_err:+.1f}%")
+
+    st.subheader("Elasticity Contribution per Feature")
+    st.caption("α_i · log(x_i + offset) for this station.")
+    contrib_rows = []
+    for feat, val in feat_data.items():
+        log_feat = f"log_{feat}"
+        coef_row = coef_df[coef_df["variable"] == log_feat]
+        if coef_row.empty:
+            continue
+        coef_val = float(coef_row["coef"].values[0])
+        contrib_rows.append({
+            "Feature":      feat,
+            "Contribution": coef_val * float(np.log(max(val + log_offset, 1e-9))),
+            "Coef":         coef_val,
+        })
+    contrib_df = pd.DataFrame(contrib_rows).sort_values("Contribution", key=abs, ascending=True)
+    fig_contrib = go.Figure(go.Bar(
+        y=contrib_df["Feature"],
+        x=contrib_df["Contribution"],
+        orientation="h",
+        marker_color=["#4ade80" if v >= 0 else "#f87171" for v in contrib_df["Contribution"]],
+        hovertemplate="<b>%{y}</b><br>Contribution: %{x:.4f}<extra></extra>",
+    ))
+    fig_contrib.add_vline(x=0, line_color="#475569", line_width=1)
+    fig_contrib.update_layout(
+        plot_bgcolor="#0f172a", paper_bgcolor="#0f172a", font_color="#e2e8f0",
+        xaxis_title="α_i · log(x_i + offset)",
+        height=max(250, len(contrib_df) * 38),
+        margin=dict(l=0, r=20, t=10, b=40),
+    )
+    st.plotly_chart(fig_contrib, use_container_width=True)
 
 
 def render_whatif(df: pd.DataFrame, coef_df: pd.DataFrame,
                   selected_features: list[str], log_offset: float) -> None:
-    pass  # Task 7
+    st.subheader("What-if Simulator")
+    st.caption("Choose a base station, adjust sliders, see how predicted ridership changes.")
+
+    base_station = st.selectbox("Base station", df["station_name"].tolist(), key="whatif_station")
+    base_row = df[df["station_name"] == base_station].iloc[0]
+    base_feat_vals = {f: float(base_row[f]) for f in selected_features if f in base_row.index}
+    base_pred = predict_ridership(coef_df, base_feat_vals, log_offset)
+
+    st.markdown("---")
+    st.markdown("**Adjust feature values:**")
+    new_vals: dict[str, float] = {}
+    slider_cols = st.columns(min(3, len(selected_features)))
+    for i, feat in enumerate(selected_features):
+        base_val = base_feat_vals.get(feat, 0.0)
+        max_val  = max(float(df[feat].max()) * 1.5, base_val + 1)
+        step     = 1.0 if feat.endswith("_count") else 10.0
+        new_vals[feat] = slider_cols[i % len(slider_cols)].slider(
+            feat, min_value=0.0, max_value=float(max_val),
+            value=float(base_val), step=step, key=f"slider_{feat}",
+        )
+
+    new_pred   = predict_ridership(coef_df, new_vals, log_offset)
+    abs_change = new_pred - base_pred
+    pct_change = abs_change / base_pred * 100 if base_pred > 0 else 0.0
+
+    st.markdown("---")
+    st.subheader("Prediction Output")
+    o1, o2, o3, o4 = st.columns(4)
+    o1.metric("Base predicted",  f"{base_pred:,.0f}")
+    o2.metric("New predicted",   f"{new_pred:,.0f}")
+    o3.metric("Change",          f"{abs_change:+,.0f}")
+    o4.metric("% Change",        f"{pct_change:+.1f}%")
+
+    st.subheader("Elasticity Impact per Feature")
+    st.caption("α_i × Δ%X_i — point elasticity approximation per feature.")
+    impact_rows = []
+    for feat in selected_features:
+        base_val = base_feat_vals.get(feat, 0.0)
+        new_val  = new_vals.get(feat, 0.0)
+        coef_row = coef_df[coef_df["variable"] == f"log_{feat}"]
+        if coef_row.empty:
+            continue
+        coef_val = float(coef_row["coef"].values[0])
+        pct_x    = (new_val - base_val) / (base_val + 1e-9) * 100
+        impact_rows.append({
+            "Feature":               feat,
+            "Base value":            base_val,
+            "New value":             new_val,
+            "Δ% feature":            round(pct_x, 1),
+            "Elasticity (α)":        round(coef_val, 4),
+            "Expected Δ% ridership": round(elasticity_impact(coef_val, pct_x), 2),
+        })
+    st.dataframe(pd.DataFrame(impact_rows), use_container_width=True, hide_index=True)
 
 
 def main() -> None:
