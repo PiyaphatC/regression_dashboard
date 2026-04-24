@@ -141,7 +141,48 @@ def run_model(
 def render_model_results(model_result: ModelResult, coef_df: pd.DataFrame,
                          df: pd.DataFrame, selected_features: list[str],
                          log_offset: float) -> None:
-    pass  # Task 4 and 5
+    # ── Equation banner ───────────────────────────────────────────────────
+    st.subheader("Fitted Model Equation")
+    intercept = float(coef_df.loc[coef_df["variable"] == "const", "coef"].values[0])
+    html_parts = [
+        f"<div style='line-height:2'><span style='color:#f1f5f9;font-size:14px'>"
+        f"log(ridership) = <span style='color:#fbbf24'>{intercept:+.4f}</span></span></div>"
+    ]
+    for _, row in coef_df[coef_df["variable"] != "const"].iterrows():
+        sign = "+" if row["coef"] >= 0 else "−"
+        feat_raw = row["variable"][4:]  # strip leading 'log_'
+        coef_color = (
+            "#4ade80" if row["significant"] and row["coef"] > 0
+            else ("#f87171" if row["significant"] and row["coef"] < 0 else "#94a3b8")
+        )
+        html_parts.append(
+            f"<div style='line-height:2;padding-left:16px'>"
+            f"<span style='color:#64748b'>{sign} </span>"
+            f"<span style='color:{coef_color}'>{abs(row['coef']):.4f}</span>"
+            f"<span style='color:#94a3b8'> · log({feat_raw} + {log_offset})</span>"
+            f"</div>"
+        )
+    legend = (
+        "<div style='margin-top:10px;font-size:11px'>"
+        "<span style='color:#4ade80'>■ significant positive</span>&nbsp;&nbsp;"
+        "<span style='color:#f87171'>■ significant negative</span>&nbsp;&nbsp;"
+        "<span style='color:#94a3b8'>■ not significant (p ≥ α)</span></div>"
+    )
+    st.markdown(
+        "<div style='background:#1e293b;padding:16px 20px;border-radius:8px;"
+        "font-family:monospace;border:1px solid #334155'>"
+        + "".join(html_parts) + legend + "</div>",
+        unsafe_allow_html=True,
+    )
+
+    # ── Model stats ───────────────────────────────────────────────────────
+    st.subheader("Model Statistics")
+    c1, c2, c3, c4, c5 = st.columns(5)
+    c1.metric("R²",           f"{model_result.rsquared:.4f}")
+    c2.metric("Adj R²",       f"{model_result.rsquared_adj:.4f}")
+    c3.metric("Observations", model_result.nobs)
+    c4.metric("F-statistic",  f"{model_result.fvalue:.2f}")
+    c5.metric("F p-value",    f"{model_result.f_pvalue:.4f}")
 
 
 def render_station_explorer(df: pd.DataFrame, coef_df: pd.DataFrame,
