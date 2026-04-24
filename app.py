@@ -314,6 +314,14 @@ def render_whatif(df: pd.DataFrame, coef_df: pd.DataFrame,
     base_feat_vals = {f: float(base_row[f]) for f in selected_features if f in base_row.index}
     base_pred = predict_ridership(coef_df, base_feat_vals, log_offset)
 
+    # Reset sliders to the new station's original values when the station changes
+    if st.session_state.get("_whatif_prev_station") != base_station:
+        for feat in selected_features:
+            slider_key = f"slider_{feat}"
+            if slider_key in st.session_state:
+                del st.session_state[slider_key]
+        st.session_state["_whatif_prev_station"] = base_station
+
     st.markdown("---")
     st.markdown("**Adjust feature values:**")
     new_vals: dict[str, float] = {}
