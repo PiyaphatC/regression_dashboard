@@ -143,7 +143,11 @@ def render_model_results(model_result: ModelResult, coef_df: pd.DataFrame,
                          log_offset: float) -> None:
     # ── Equation banner ───────────────────────────────────────────────────
     st.subheader("Fitted Model Equation")
-    intercept = float(coef_df.loc[coef_df["variable"] == "const", "coef"].values[0])
+    const_row = coef_df[coef_df["variable"] == "const"]
+    if const_row.empty:
+        st.error("Internal error: model missing constant term.")
+        return
+    intercept = float(const_row["coef"].values[0])
     html_parts = [
         f"<div style='line-height:2'><span style='color:#f1f5f9;font-size:14px'>"
         f"log(ridership) = <span style='color:#fbbf24'>{intercept:+.4f}</span></span></div>"
@@ -179,7 +183,8 @@ def render_model_results(model_result: ModelResult, coef_df: pd.DataFrame,
     st.subheader("Model Statistics")
     c1, c2, c3, c4, c5 = st.columns(5)
     c1.metric("R²",           f"{model_result.rsquared:.4f}")
-    c2.metric("Adj R²",       f"{model_result.rsquared_adj:.4f}")
+    adj_r2 = model_result.rsquared_adj
+    c2.metric("Adj R²", f"{adj_r2:.4f}" if not np.isnan(adj_r2) else "—")
     c3.metric("Observations", model_result.nobs)
     c4.metric("F-statistic",  f"{model_result.fvalue:.2f}")
     c5.metric("F p-value",    f"{model_result.f_pvalue:.4f}")
