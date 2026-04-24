@@ -59,6 +59,15 @@ def test_fit_model_returns_model_result(sample_df):
     assert result.nobs == 60
 
 
+def test_fit_model_result_field_types(sample_df):
+    result, _ = fit_model(sample_df, ["bus_stop_count", "win_count"])
+    assert isinstance(result.rsquared, float)
+    assert isinstance(result.rsquared_adj, float)
+    assert isinstance(result.nobs, int)
+    assert isinstance(result.fvalue, float)
+    assert isinstance(result.f_pvalue, float)
+
+
 # ── IV/2SLS ────────────────────────────────────────────────────────────────────
 
 def test_fit_iv_model_returns_model_result(sample_df):

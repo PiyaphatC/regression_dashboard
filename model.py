@@ -36,6 +36,8 @@ def fit_model(
         coef_df columns: variable, coef, se, t, p, ci_lo, ci_hi, significant
         'variable' values are 'const' or 'log_{feature_name}'
     """
+    if not features:
+        raise ValueError("features must be a non-empty list")
     X = df[features].apply(lambda s: np.log(s + log_offset))
     X.columns = [f"log_{c}" for c in features]
     X = sm.add_constant(X)
@@ -61,11 +63,11 @@ def fit_model(
     coef_df["significant"] = coef_df["p"] < sig_level
 
     model_result = ModelResult(
-        rsquared=res.rsquared,
-        rsquared_adj=res.rsquared_adj,
+        rsquared=float(res.rsquared),
+        rsquared_adj=float(res.rsquared_adj),
         nobs=int(res.nobs),
-        fvalue=res.fvalue,
-        f_pvalue=res.f_pvalue,
+        fvalue=float(res.fvalue),
+        f_pvalue=float(res.f_pvalue),
         model_type="OLS",
     )
     return model_result, coef_df.reset_index(drop=True)
@@ -177,7 +179,7 @@ def build_equation_str(coef_df: pd.DataFrame, log_offset: float = 1.0) -> str:
     lines = [f"log(ridership) = {intercept:+.4f}"]
     for _, row in coef_df[coef_df["variable"] != "const"].iterrows():
         sign = "+" if row["coef"] >= 0 else "-"
-        feat_raw = row["variable"].replace("log_", "")
+        feat_raw = row["variable"][4:]  # strip exactly the leading 'log_' prefix
         lines.append(f"  {sign} {abs(row['coef']):.4f} · log({feat_raw} + {log_offset})")
     return "\n".join(lines)
 
@@ -205,7 +207,8 @@ def predict_ridership(
         log_feat = f"log_{feat}"
         row = coef_df[coef_df["variable"] == log_feat]
         if not row.empty:
-            log_pred += float(row["coef"].values[0]) * np.log(float(val) + log_offset)
+            safe_val = max(float(val) + log_offset, 1e-9)
+            log_pred += float(row["coef"].values[0]) * np.log(safe_val)
     return float(np.exp(log_pred))
 
 
