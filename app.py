@@ -325,7 +325,6 @@ def render_whatif(df: pd.DataFrame, coef_df: pd.DataFrame,
     if st.button("↺ Reset to base values", key="whatif_reset"):
         for feat in selected_features:
             st.session_state[f"slider_{feat}"] = base_feat_vals.get(feat, 0.0)
-        st.rerun()
 
     new_vals: dict[str, float] = {}
     slider_cols = st.columns(min(3, len(selected_features)))
