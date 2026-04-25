@@ -250,7 +250,7 @@ def render_station_explorer(df: pd.DataFrame, coef_df: pd.DataFrame,
     col_info, col_pred = st.columns(2)
     with col_info:
         st.markdown("**Station Info**")
-        st.write(f"Source: `{row['source']}`")
+        #st.write(f"Source: `{row['source']}`")
         if "line_code" in row.index:
             st.write(f"Line code: `{row['line_code']}`")
         st.markdown("**Feature Values**")
@@ -395,7 +395,7 @@ def main() -> None:
         unsafe_allow_html=True,
     )
 
-    tab1, tab2, tab3 = st.tabs(["📊 Model Results", "🗺️ Station Explorer", "🔮 What-if Simulator"])
+    tab1, tab2, tab3 = st.tabs(["Model Results", "Station Explorer", "What-if Simulator"])
     with tab1:
         render_model_results(model_result, coef_df, df, selected_features, log_offset)
     with tab2:
