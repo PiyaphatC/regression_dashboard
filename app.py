@@ -21,20 +21,7 @@ from model import (
 
 DATA_PATH = "Output/combined_station_summary_expanded.csv"
 
-ALL_FEATURES = [
-    "bus_stop_count", "bus_stop_min_dist",
-    "win_count",
-    "songtaew_count",
-    "minibus_count",
-    "taxi_count", "taxi_min_dist",
-    "tuktuk_count",
-    "kiss_ride_count",
-    "park_ride_car_count",
-    "park_ride_moto_count",
-    "bike_parking_count",
-    "bike_share_count",
-    "scooter_share_count",
-]
+NON_FEATURE_COLS = {"entry", "source", "line_code", "station_name", "station"}
 
 DEFAULT_FEATURES = [
     "bus_stop_count", "bus_stop_min_dist",
@@ -76,7 +63,10 @@ def build_sidebar(df: pd.DataFrame) -> tuple:
 
     # ── Features ──────────────────────────────────────────────────────────
     st.sidebar.subheader("Features")
-    available = [f for f in ALL_FEATURES if f in df.columns]
+    available = [
+        c for c in df.select_dtypes(include="number").columns
+        if c not in NON_FEATURE_COLS
+    ]
     selected_features = [
         feat for feat in available
         if st.sidebar.checkbox(feat, value=(feat in DEFAULT_FEATURES), key=f"feat_{feat}")
