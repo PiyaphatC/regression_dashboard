@@ -24,31 +24,18 @@ DATA_PATH = "Output/combined_station_summary_expanded_rev7.csv"
 NON_FEATURE_COLS = {"entry", "source", "line_code", "station_name", "station"}
 
 DEFAULT_FEATURES = [
-    # Pedestrian infrastructure (required)
-    "sw_total_length",
-    "road_length_gt4m",
-    "road_length_gt4m_atleast1sw",
-    "barrier_pct_0",
-    "shade_pct_0",
-    "obs_pct_0",
-    # Transit access (forward-selected)
-    "taxi_count",
+    # Sidewalk quality — surface (% good rating)
+    "surface_pct_1",
+    # Sidewalk quality — shade
+    "shade_pct_1",
+    # Sidewalk quality — obstacle-free (% good rating)
+    "obs_pct_1",
+    # Last-mile feeder modes
     "win_count",
-    "bike_share_mean_dist",
-    "win_mean_dist",
-    "songtaew_min_dist",
-    "samlor_min_dist",
-    "tuktuk_min_dist",
-    "bus_stop_mean_dist",
-    # Road geometry (forward-selected)
-    "n_segments",
-    "road_width_min",
-    "road_width_max",
-    # Walkability quality (forward-selected)
-    "barrier_pct_neg1",
-    "shade_pct_neg1",
-    "sidewalk_length_shade_0",
-    "sidewalk_length_surface_0",
+    "bike_share_count",
+    "taxi_count",
+    # Bus connectivity
+    "bus_stop_min_dist",
 ]
 
 
