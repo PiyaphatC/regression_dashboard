@@ -385,7 +385,7 @@ def main() -> None:
     selected_features, log_offset, sig_level, endog_features, instruments = build_sidebar(df)
 
     st.title("🚉 Bangkok Ridership Elasticity Dashboard")
-    st.caption(f"{len(df)} stations · sources: {', '.join(df['source'].unique())}")
+    #st.caption(f"{len(df)} stations · sources: {', '.join(df['source'].unique())}")
 
     if not selected_features:
         st.warning("Select at least one feature in the sidebar.")
