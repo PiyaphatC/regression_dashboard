@@ -19,34 +19,32 @@ from model import (
     predict_ridership,
 )
 
-DATA_PATH = "Output/combined_station_summary_expanded_rev4.csv"
+DATA_PATH = "Output/combined_station_summary_expanded_rev7.csv"
 
 NON_FEATURE_COLS = {"entry", "source", "line_code", "station_name", "station"}
 
 DEFAULT_FEATURES = [
-    "sidewalk_length_surface_neg1", "sidewalk_length_surface_0", "sidewalk_length_surface_1",
-    "sidewalk_length_shade_neg1",   "sidewalk_length_shade_0",   "sidewalk_length_shade_1",
-    "sidewalk_length_obstacle_neg1","sidewalk_length_obstacle_0","sidewalk_length_obstacle_1",
-    "sidewalk_length_road_gt4m",
+    # Transit access
     "win_count",
-    "n_segments",
-    "bike_parking_min_dist",
-    "obs_pct_1",
-    "barrier_pct_1",
-    "kiss_ride_count",
-    "road_width_max",
     "taxi_count",
-    "bike_parking_count",
-    "obs_pct_0",
-    "kiss_ride_min_dist",
-    "songtaew_min_dist",
-    "park_ride_car_count",
-    "park_ride_car_min_dist",
+    "bike_share_mean_dist",
     "bus_stop_mean_dist",
-    "win_mean_dist",
-    "win_min_dist",
-    "songtaew_count",
-    "tuktuk_count",
+    "tuktuk_min_dist",
+    # Bike parking
+    "bike_parking_count",
+    "bike_parking_min_dist",
+    "bike_parking_mean_dist",
+    # Pedestrian infrastructure
+    "sw_total_length",
+    "n_segments",
+    "road_width_min",
+    "road_width_max",
+    "sidewalk_length_surface_0",
+    # Walkability quality
+    "barrier_pct_neg1",
+    "shade_pct_neg1",
+    "obs_pct_neg1",
+    "sidewalk_length_obstacle_neg1",
 ]
 
 
@@ -385,7 +383,6 @@ def main() -> None:
     selected_features, log_offset, sig_level, endog_features, instruments = build_sidebar(df)
 
     st.title("🚉 Bangkok Ridership Elasticity Dashboard")
-    st.caption(f"{len(df)} stations · sources: {', '.join(df['source'].unique())}")
 
     if not selected_features:
         st.warning("Select at least one feature in the sidebar.")
