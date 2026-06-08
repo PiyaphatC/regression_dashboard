@@ -24,11 +24,29 @@ DATA_PATH = "Output/combined_station_summary_expanded_rev4.csv"
 NON_FEATURE_COLS = {"entry", "source", "line_code", "station_name", "station"}
 
 DEFAULT_FEATURES = [
-    "bus_stop_count", "bus_stop_min_dist",
+    "sidewalk_length_surface_neg1", "sidewalk_length_surface_0", "sidewalk_length_surface_1",
+    "sidewalk_length_shade_neg1",   "sidewalk_length_shade_0",   "sidewalk_length_shade_1",
+    "sidewalk_length_obstacle_neg1","sidewalk_length_obstacle_0","sidewalk_length_obstacle_1",
+    "sidewalk_length_road_gt4m",
     "win_count",
-    "taxi_count",
+    "n_segments",
+    "bike_parking_min_dist",
+    "obs_pct_1",
+    "barrier_pct_1",
     "kiss_ride_count",
+    "road_width_max",
+    "taxi_count",
     "bike_parking_count",
+    "obs_pct_0",
+    "kiss_ride_min_dist",
+    "songtaew_min_dist",
+    "park_ride_car_count",
+    "park_ride_car_min_dist",
+    "bus_stop_mean_dist",
+    "win_mean_dist",
+    "win_min_dist",
+    "songtaew_count",
+    "tuktuk_count",
 ]
 
 
@@ -220,7 +238,7 @@ def render_model_results(model_result: ModelResult, coef_df: pd.DataFrame,
     station_df["residual"]    = station_df["entry"] - station_df["predicted"]
     station_df["pct_error_%"] = (station_df["residual"] / station_df["entry"] * 100).round(1)
     station_df[["entry", "predicted", "residual"]] = (
-        station_df[["entry", "predicted", "residual"]].round(0).astype(int)
+        station_df[["entry", "predicted", "residual"]].round(0).astype("Int64")
     )
     station_df = station_df.rename(columns={
         "station_name": "Station", "source": "Source",
