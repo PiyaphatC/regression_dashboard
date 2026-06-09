@@ -35,7 +35,7 @@ DEFAULT_FEATURES = [
     "bike_share_count",
     "taxi_count",
     # Bus connectivity
-    "bus_stop_min_dist",
+    "bus_stop_mean_dist",
 ]
 
 

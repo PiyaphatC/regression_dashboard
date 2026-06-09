@@ -10,17 +10,17 @@ Log-log OLS regression of Bangkok rail station ridership (daily entries) against
 - **Ridership source:** `Output/ridership_raw.xlsx`
 
 ## Current Best Model
-**R² = 0.4329 | R²_adj = 0.4114 | n = 193 | OLS with HC3 robust SE**
+**R² = 0.4328 | R²_adj = 0.4114 | n = 193 | OLS with HC3 robust SE**
 
 | Variable | Role | Expected sign | Coef | p |
 |---|---|---|---|---|
-| `surface_pct_1` | Sidewalk surface quality (%) | + | +0.1659 | 0.069 . |
-| `shade_pct_1` | Sidewalk shade (%) | + | +0.0519 | 0.288 |
-| `obs_pct_1` | Obstacle-free sidewalk (%) | + | +0.0608 | 0.426 |
-| `win_count` | Motorcycle taxi stops | + | +0.5547 | <0.001 *** |
-| `bike_share_count` | Bike share stations | + | +0.6217 | <0.001 *** |
+| `surface_pct_1` | Sidewalk surface quality (%) | + | +0.1771 | 0.058 . |
+| `shade_pct_1` | Sidewalk shade (%) | + | +0.0501 | 0.302 |
+| `obs_pct_1` | Obstacle-free sidewalk (%) | + | +0.0529 | 0.489 |
+| `win_count` | Motorcycle taxi stops | + | +0.5710 | <0.001 *** |
+| `bike_share_count` | Bike share stations | + | +0.6215 | <0.001 *** |
 | `taxi_count` | Taxi stands | + | +0.5963 | <0.001 *** |
-| `bus_stop_min_dist` | Distance to nearest bus stop (m) | − | −0.0470 | 0.299 |
+| `bus_stop_mean_dist` | Mean distance to bus stops (m) | − | −0.0557 | 0.289 |
 
 This variable set is coded as `DEFAULT_FEATURES` in `app.py`.
 
@@ -43,6 +43,6 @@ Length columns (`sidewalk_length_surface_*`, `sidewalk_length_shade_*`, `sidewal
 
 ## Model Notes
 - All models use log-log specification: `log(y) ~ log(x + offset)` with offset = 1.0
-- `bus_stop_count` has a wrong-sign (negative) coefficient — use `bus_stop_min_dist` instead if bus connectivity is needed
+- `bus_stop_count` has a wrong-sign (negative) coefficient — use `bus_stop_mean_dist` instead if bus connectivity is needed
 - `win_count`, `bike_share_count`, `taxi_count` are the strongest predictors (last-mile feeders)
 - Shade and obstacle-free sidewalk are directionally correct but not statistically significant after controlling for feeder modes
