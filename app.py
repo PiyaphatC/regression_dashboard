@@ -21,7 +21,7 @@ from model import (
 
 DATA_PATH = "Output/combined_station_summary_expanded_rev10.csv"
 
-NON_FEATURE_COLS = {"entry", "source", "line_code", "station_name", "station"}
+NON_FEATURE_COLS = {"entry", "source", "line_code", "station_name", "station", "display_name"}
 
 DEFAULT_FEATURES = [
     # Sidewalk quality — surface (% good rating)
@@ -43,7 +43,9 @@ DEFAULT_FEATURES = [
 def load_data() -> pd.DataFrame:
     df = pd.read_csv(DATA_PATH, encoding="utf-8-sig")
     df.columns = df.columns.str.replace("\ufeff", "", regex=False).str.strip()
-    return df.dropna(subset=["entry"])
+    df = df.dropna(subset=["entry"])
+    df["display_name"] = df["line_code"] + " — " + df["station_name"]
+    return df
 
 
 def get_numeric_columns(df: pd.DataFrame) -> list[str]:
@@ -219,7 +221,7 @@ def render_model_results(model_result: ModelResult, coef_df: pd.DataFrame,
 
     # ── Station table ─────────────────────────────────────────────────────
     st.subheader("Stations — Actual vs Predicted")
-    station_df = df[["station_name", "source", "entry"]].copy()
+    station_df = df[["display_name", "source", "entry"]].copy()
     station_df["predicted"] = df.apply(
         lambda row: predict_ridership(coef_df, {f: row[f] for f in selected_features}, log_offset),
         axis=1,
@@ -230,7 +232,7 @@ def render_model_results(model_result: ModelResult, coef_df: pd.DataFrame,
         station_df[["entry", "predicted", "residual"]].round(0).astype("Int64")
     )
     station_df = station_df.rename(columns={
-        "station_name": "Station", "source": "Source",
+        "display_name": "Station", "source": "Source",
         "entry": "Actual",        "predicted": "Predicted",
         "residual": "Residual",
     })
@@ -240,8 +242,8 @@ def render_model_results(model_result: ModelResult, coef_df: pd.DataFrame,
 def render_station_explorer(df: pd.DataFrame, coef_df: pd.DataFrame,
                              selected_features: list[str], log_offset: float) -> None:
     st.subheader("Station Explorer")
-    selected_station = st.selectbox("Select a station", df["station_name"].tolist(), key="explorer_station")
-    row = df[df["station_name"] == selected_station].iloc[0]
+    selected_station = st.selectbox("Select a station", df["display_name"].tolist(), key="explorer_station")
+    row = df[df["display_name"] == selected_station].iloc[0]
     feat_data = {f: float(row[f]) for f in selected_features if f in row.index}
 
     col_info, col_pred = st.columns(2)
@@ -306,8 +308,8 @@ def render_whatif(df: pd.DataFrame, coef_df: pd.DataFrame,
     st.subheader("What-if Simulator")
     st.caption("Choose a base station, adjust sliders, see how predicted ridership changes.")
 
-    base_station = st.selectbox("Base station", df["station_name"].tolist(), key="whatif_station")
-    base_row = df[df["station_name"] == base_station].iloc[0]
+    base_station = st.selectbox("Base station", df["display_name"].tolist(), key="whatif_station")
+    base_row = df[df["display_name"] == base_station].iloc[0]
     base_feat_vals = {f: float(base_row[f]) for f in selected_features if f in base_row.index}
     base_pred = predict_ridership(coef_df, base_feat_vals, log_offset)
 
