@@ -4,23 +4,23 @@
 Log-log OLS regression of Bangkok rail station ridership (daily entries) against sidewalk quality and last-mile feeder mode variables. Outputs are elasticity coefficients. Dashboard is built with Streamlit (`app.py`).
 
 ## Data
-- **Main dataset:** `Output/combined_station_summary_expanded_rev7.csv`
+- **Main dataset:** `Output/combined_station_summary_expanded_rev10.csv`
   - 193 stations, 76 columns
   - Target: `entry` (average daily entries)
 - **Ridership source:** `Output/ridership_raw.xlsx`
 
 ## Current Best Model
-**R² = 0.4349 | R²_adj = 0.4135 | n = 193 | OLS with HC3 robust SE**
+**R² = 0.4329 | R²_adj = 0.4114 | n = 193 | OLS with HC3 robust SE**
 
 | Variable | Role | Expected sign | Coef | p |
 |---|---|---|---|---|
-| `surface_pct_1` | Sidewalk surface quality (%) | + | +0.1635 | 0.072 |
-| `shade_pct_1` | Sidewalk shade (%) | + | +0.0528 | 0.279 |
-| `obs_pct_1` | Obstacle-free sidewalk (%) | + | +0.0590 | 0.443 |
-| `win_count` | Motorcycle taxi stops | + | +0.5600 | <0.001 *** |
-| `bike_share_count` | Bike share stations | + | +0.6119 | <0.001 *** |
-| `taxi_count` | Taxi stands | + | +0.5832 | <0.001 *** |
-| `bus_stop_min_dist` | Distance to nearest bus stop (m) | − | −0.0643 | 0.163 |
+| `surface_pct_1` | Sidewalk surface quality (%) | + | +0.1659 | 0.069 . |
+| `shade_pct_1` | Sidewalk shade (%) | + | +0.0519 | 0.288 |
+| `obs_pct_1` | Obstacle-free sidewalk (%) | + | +0.0608 | 0.426 |
+| `win_count` | Motorcycle taxi stops | + | +0.5547 | <0.001 *** |
+| `bike_share_count` | Bike share stations | + | +0.6217 | <0.001 *** |
+| `taxi_count` | Taxi stands | + | +0.5963 | <0.001 *** |
+| `bus_stop_min_dist` | Distance to nearest bus stop (m) | − | −0.0470 | 0.299 |
 
 This variable set is coded as `DEFAULT_FEATURES` in `app.py`.
 

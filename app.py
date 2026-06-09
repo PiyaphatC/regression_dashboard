@@ -19,7 +19,7 @@ from model import (
     predict_ridership,
 )
 
-DATA_PATH = "Output/combined_station_summary_expanded_rev7.csv"
+DATA_PATH = "Output/combined_station_summary_expanded_rev10.csv"
 
 NON_FEATURE_COLS = {"entry", "source", "line_code", "station_name", "station"}
 
