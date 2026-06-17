@@ -221,10 +221,7 @@ def render_model_results(model_result: ModelResult, coef_df: pd.DataFrame,
     c5.metric("F p-value",    f"{model_result.f_pvalue:.4f}")
 
     # ── Coefficient chart ─────────────────────────────────────────────────
-    chart_title = "Elasticity Coefficients (95% CI)" if model_spec == "log-log" else "Coefficients (95% CI)"
-    hover_label = "Elasticity" if model_spec == "log-log" else "Coefficient"
-    xaxis_label = "Elasticity estimate" if model_spec == "log-log" else "Coefficient estimate"
-    st.subheader(chart_title)
+    st.subheader("Elasticity Coefficients (95% CI)")
     plot_df = coef_df[coef_df["variable"] != "const"].copy()
     plot_df = plot_df.sort_values("coef", key=abs, ascending=True)
     bar_colors = [
@@ -243,12 +240,12 @@ def render_model_results(model_result: ModelResult, coef_df: pd.DataFrame,
             arrayminus=(plot_df["coef"] - plot_df["ci_lo"]).tolist(),
             color="#475569", thickness=2,
         ),
-        hovertemplate=f"<b>%{{y}}</b><br>{hover_label}: %{{x:.4f}}<extra></extra>",
+        hovertemplate="<b>%{y}</b><br>Elasticity: %{x:.4f}<extra></extra>",
     ))
     fig_coef.add_vline(x=0, line_color="#475569", line_width=1)
     fig_coef.update_layout(
         plot_bgcolor="#0f172a", paper_bgcolor="#0f172a", font_color="#e2e8f0",
-        xaxis_title=xaxis_label,
+        xaxis_title="Elasticity estimate",
         height=max(300, len(plot_df) * 38),
         margin=dict(l=0, r=20, t=10, b=40),
     )
@@ -307,15 +304,13 @@ def render_station_explorer(df: pd.DataFrame, coef_df: pd.DataFrame,
         m4.metric("% Error",  f"{pct_err:+.1f}%")
 
     if model_spec == "log-log":
-        contrib_section_title = "Elasticity Contribution per Feature"
         contrib_caption = "α_i · log(x_i + offset) for this station."
-        xaxis_contrib = "α_i · log(x_i + offset)"
+        contrib_xaxis  = "α_i · log(x_i + offset)"
     else:
-        contrib_section_title = "Coefficient Contribution per Feature"
         contrib_caption = "β_i · x_i for this station."
-        xaxis_contrib = "β_i · x_i"
+        contrib_xaxis  = "β_i · x_i"
 
-    st.subheader(contrib_section_title)
+    st.subheader("Elasticity Contribution per Feature")
     st.caption(contrib_caption)
     contrib_rows = []
     for feat, val in feat_data.items():
@@ -324,15 +319,12 @@ def render_station_explorer(df: pd.DataFrame, coef_df: pd.DataFrame,
         if coef_row.empty:
             continue
         coef_val = float(coef_row["coef"].values[0])
-        if model_spec == "log-log":
-            contribution = coef_val * float(np.log(max(val + log_offset, 1e-9)))
-        else:
-            contribution = coef_val * float(val)
-        contrib_rows.append({
-            "Feature":      feat,
-            "Contribution": contribution,
-            "Coef":         coef_val,
-        })
+        contribution = (
+            coef_val * float(np.log(max(val + log_offset, 1e-9)))
+            if model_spec == "log-log"
+            else coef_val * float(val)
+        )
+        contrib_rows.append({"Feature": feat, "Contribution": contribution, "Coef": coef_val})
     contrib_df = pd.DataFrame(contrib_rows).sort_values("Contribution", key=abs, ascending=True)
     fig_contrib = go.Figure(go.Bar(
         y=contrib_df["Feature"],
@@ -344,7 +336,7 @@ def render_station_explorer(df: pd.DataFrame, coef_df: pd.DataFrame,
     fig_contrib.add_vline(x=0, line_color="#475569", line_width=1)
     fig_contrib.update_layout(
         plot_bgcolor="#0f172a", paper_bgcolor="#0f172a", font_color="#e2e8f0",
-        xaxis_title=xaxis_contrib,
+        xaxis_title=contrib_xaxis,
         height=max(250, len(contrib_df) * 38),
         margin=dict(l=0, r=20, t=10, b=40),
     )
@@ -397,48 +389,32 @@ def render_whatif(df: pd.DataFrame, coef_df: pd.DataFrame,
     o3.metric("Change",          f"{abs_change:+,.0f}")
     o4.metric("% Change",        f"{pct_change:+.1f}%")
 
+    st.subheader("Elasticity Impact per Feature")
     if model_spec == "log-log":
-        st.subheader("Elasticity Impact per Feature")
         st.caption("α_i × Δ%X_i — point elasticity approximation per feature.")
-        impact_rows = []
-        for feat in selected_features:
-            base_val = base_feat_vals.get(feat, 0.0)
-            new_val  = new_vals.get(feat, 0.0)
-            coef_row = coef_df[coef_df["variable"] == f"log_{feat}"]
-            if coef_row.empty:
-                continue
-            coef_val = float(coef_row["coef"].values[0])
-            pct_x    = (new_val - base_val) / (base_val + 1e-9) * 100
-            impact_rows.append({
-                "Feature":               feat,
-                "Base value":            base_val,
-                "New value":             new_val,
-                "Δ% feature":            round(pct_x, 1),
-                "Elasticity (α)":        round(coef_val, 4),
-                "Expected Δ% ridership": round(elasticity_impact(coef_val, pct_x), 2),
-            })
-        st.dataframe(pd.DataFrame(impact_rows), use_container_width=True, hide_index=True)
     else:
-        st.subheader("Coefficient Impact per Feature")
-        st.caption("β_i × Δx_i — marginal effect per feature.")
-        impact_rows = []
-        for feat in selected_features:
-            base_val = base_feat_vals.get(feat, 0.0)
-            new_val  = new_vals.get(feat, 0.0)
-            coef_row = coef_df[coef_df["variable"] == feat]
-            if coef_row.empty:
-                continue
-            coef_val  = float(coef_row["coef"].values[0])
-            delta_x   = new_val - base_val
-            impact_rows.append({
-                "Feature":                    feat,
-                "Base value":                 base_val,
-                "New value":                  new_val,
-                "Δ feature":                  round(delta_x, 2),
-                "Coefficient (β)":            round(coef_val, 4),
-                "Expected Δ ridership":       round(coef_val * delta_x, 0),
-            })
-        st.dataframe(pd.DataFrame(impact_rows), use_container_width=True, hide_index=True)
+        st.caption("Point elasticity (β_i × x_i / ŷ) × Δ%X_i — evaluated at base station values.")
+    impact_rows = []
+    for feat in selected_features:
+        base_val = base_feat_vals.get(feat, 0.0)
+        new_val  = new_vals.get(feat, 0.0)
+        var_name = f"log_{feat}" if model_spec == "log-log" else feat
+        coef_row = coef_df[coef_df["variable"] == var_name]
+        if coef_row.empty:
+            continue
+        coef_val = float(coef_row["coef"].values[0])
+        # For log-log α is already an elasticity; for linear compute point elasticity at base
+        elasticity = coef_val if model_spec == "log-log" else coef_val * base_val / (base_pred + 1e-9)
+        pct_x = (new_val - base_val) / (base_val + 1e-9) * 100
+        impact_rows.append({
+            "Feature":               feat,
+            "Base value":            base_val,
+            "New value":             new_val,
+            "Δ% feature":            round(pct_x, 1),
+            "Elasticity":            round(elasticity, 4),
+            "Expected Δ% ridership": round(elasticity_impact(elasticity, pct_x), 2),
+        })
+    st.dataframe(pd.DataFrame(impact_rows), use_container_width=True, hide_index=True)
 
 
 def main() -> None:
