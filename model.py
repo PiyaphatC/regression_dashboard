@@ -15,9 +15,10 @@ from linearmodels.iv import IV2SLS
 
 # Normalised result container — same shape for OLS and IV output.
 # fvalue / f_pvalue come from the model's joint significance test.
+# model_spec: "log-log" or "linear"
 ModelResult = namedtuple(
     "ModelResult",
-    ["rsquared", "rsquared_adj", "nobs", "fvalue", "f_pvalue", "model_type"],
+    ["rsquared", "rsquared_adj", "nobs", "fvalue", "f_pvalue", "model_type", "model_spec"],
 )
 
 
@@ -69,6 +70,57 @@ def fit_model(
         fvalue=float(res.fvalue),
         f_pvalue=float(res.f_pvalue),
         model_type="OLS",
+        model_spec="log-log",
+    )
+    return model_result, coef_df.reset_index(drop=True)
+
+
+def fit_linear_model(
+    df: pd.DataFrame,
+    features: list,
+    sig_level: float = 0.05,
+) -> tuple:
+    """
+    Fit a linear OLS model (no log transformation) with HC3 robust SEs.
+
+    Returns
+    -------
+    ModelResult, coef_df
+        coef_df columns: variable, coef, se, t, p, ci_lo, ci_hi, significant
+        'variable' values are 'const' or the raw feature name
+    """
+    if not features:
+        raise ValueError("features must be a non-empty list")
+    X = sm.add_constant(df[features].copy())
+    y = df["entry"].copy()
+    y.name = "entry"
+
+    data = pd.concat([y, X], axis=1).dropna()
+    y_clean = data.iloc[:, 0]
+    X_clean = data.iloc[:, 1:]
+
+    res = sm.OLS(y_clean, X_clean).fit(cov_type="HC3")
+
+    ci = res.conf_int()
+    coef_df = pd.DataFrame({
+        "variable": res.params.index,
+        "coef":     res.params.values,
+        "se":       res.bse.values,
+        "t":        res.tvalues.values,
+        "p":        res.pvalues.values,
+        "ci_lo":    ci[0].values,
+        "ci_hi":    ci[1].values,
+    })
+    coef_df["significant"] = coef_df["p"] < sig_level
+
+    model_result = ModelResult(
+        rsquared=float(res.rsquared),
+        rsquared_adj=float(res.rsquared_adj),
+        nobs=int(res.nobs),
+        fvalue=float(res.fvalue),
+        f_pvalue=float(res.f_pvalue),
+        model_type="OLS",
+        model_spec="linear",
     )
     return model_result, coef_df.reset_index(drop=True)
 
@@ -162,6 +214,7 @@ def fit_iv_model(
         fvalue=float(f_stat.stat),
         f_pvalue=float(f_stat.pval),
         model_type="IV/2SLS",
+        model_spec="log-log",
     )
     return model_result, coef_df.reset_index(drop=True)
 
@@ -188,28 +241,38 @@ def predict_ridership(
     coef_df: pd.DataFrame,
     feature_values: dict,
     log_offset: float = 1.0,
+    model_spec: str = "log-log",
 ) -> float:
     """
-    Compute exp(ŷ) from the coefficient table and a dict of raw feature values.
+    Compute predicted ridership from the coefficient table and raw feature values.
 
     Parameters
     ----------
-    coef_df : DataFrame returned by fit_model or fit_iv_model
+    coef_df : DataFrame returned by fit_model, fit_linear_model, or fit_iv_model
     feature_values : {raw_feature_name: value}, e.g. {"bus_stop_count": 4.0}
-    log_offset : must match value used during model fitting
+    log_offset : only used for log-log spec
+    model_spec : "log-log" (returns exp(ŷ)) or "linear" (returns ŷ directly)
 
     Returns
     -------
-    Predicted ridership (float, already exponentiated)
+    Predicted ridership (float)
     """
-    log_pred = float(coef_df.loc[coef_df["variable"] == "const", "coef"].values[0])
-    for feat, val in feature_values.items():
-        log_feat = f"log_{feat}"
-        row = coef_df[coef_df["variable"] == log_feat]
-        if not row.empty:
-            safe_val = max(float(val) + log_offset, 1e-9)
-            log_pred += float(row["coef"].values[0]) * np.log(safe_val)
-    return float(np.exp(log_pred))
+    intercept = float(coef_df.loc[coef_df["variable"] == "const", "coef"].values[0])
+    if model_spec == "linear":
+        pred = intercept
+        for feat, val in feature_values.items():
+            row = coef_df[coef_df["variable"] == feat]
+            if not row.empty:
+                pred += float(row["coef"].values[0]) * float(val)
+        return pred
+    else:  # log-log
+        log_pred = intercept
+        for feat, val in feature_values.items():
+            row = coef_df[coef_df["variable"] == f"log_{feat}"]
+            if not row.empty:
+                safe_val = max(float(val) + log_offset, 1e-9)
+                log_pred += float(row["coef"].values[0]) * np.log(safe_val)
+        return float(np.exp(log_pred))
 
 
 def elasticity_impact(coef: float, pct_change_x: float) -> float:

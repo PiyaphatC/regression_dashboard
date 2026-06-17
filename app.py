@@ -15,6 +15,7 @@ from model import (
     build_equation_str,
     elasticity_impact,
     fit_iv_model,
+    fit_linear_model,
     fit_model,
     predict_ridership,
 )
@@ -65,10 +66,21 @@ def build_sidebar(df: pd.DataFrame) -> tuple:
     selected_features : list[str]
     log_offset        : float
     sig_level         : float
+    model_spec        : str  ("log-log" or "linear")
     endog_features    : list[str]   (subset of selected_features)
     instruments       : dict[str, list[str]]  {endog_feat: [instrument_cols]}
     """
     st.sidebar.title("⚙️ Model Controls")
+
+    # ── Model selection ────────────────────────────────────────────────────
+    st.sidebar.subheader("Model")
+    model_spec = st.sidebar.radio(
+        "Specification",
+        options=["log-log", "linear"],
+        index=0,
+        horizontal=True,
+        key="model_spec",
+    )
 
     # ── Features ──────────────────────────────────────────────────────────
     st.sidebar.subheader("Features")
@@ -83,7 +95,12 @@ def build_sidebar(df: pd.DataFrame) -> tuple:
 
     st.sidebar.subheader("Parameters")
     sig_level  = float(st.sidebar.number_input("Significance level (α)", value=0.05, min_value=0.001, max_value=0.20, step=0.01))
-    log_offset = float(st.sidebar.number_input("Log offset", value=1.0, min_value=0.0, step=0.5))
+    log_offset = float(st.sidebar.number_input(
+        "Log offset",
+        value=1.0, min_value=0.0, step=0.5,
+        disabled=(model_spec == "linear"),
+        help="Only used in log-log specification",
+    ))
 
     # ── Instrumental Variables ─────────────────────────────────────────────
     endog_features: list[str] = []
@@ -115,7 +132,7 @@ def build_sidebar(df: pd.DataFrame) -> tuple:
                 if chosen:
                     instruments[endog_feat] = chosen
 
-    return selected_features, log_offset, sig_level, endog_features, instruments
+    return selected_features, log_offset, sig_level, model_spec, endog_features, instruments
 
 
 def run_model(
@@ -125,8 +142,11 @@ def run_model(
     instruments: dict[str, list[str]],
     log_offset: float,
     sig_level: float,
+    model_spec: str = "log-log",
 ) -> tuple[ModelResult, pd.DataFrame]:
-    """Choose OLS or IV based on sidebar state and refit."""
+    """Choose OLS/IV and log-log/linear based on sidebar state and refit."""
+    if model_spec == "linear":
+        return fit_linear_model(df, selected_features, sig_level)
     use_iv = bool(
         endog_features
         and all(endog in instruments and instruments[endog] for endog in endog_features)
@@ -140,6 +160,8 @@ def run_model(
 def render_model_results(model_result: ModelResult, coef_df: pd.DataFrame,
                          df: pd.DataFrame, selected_features: list[str],
                          log_offset: float) -> None:
+    model_spec = model_result.model_spec
+
     # ── Equation banner ───────────────────────────────────────────────────
     st.subheader("Fitted Model Equation")
     const_row = coef_df[coef_df["variable"] == "const"]
@@ -147,13 +169,23 @@ def render_model_results(model_result: ModelResult, coef_df: pd.DataFrame,
         st.error("Internal error: model missing constant term.")
         return
     intercept = float(const_row["coef"].values[0])
+
+    if model_spec == "linear":
+        lhs = "ridership"
+        def term_str(row):
+            return f"<span style='color:#94a3b8'> · {row['variable']}</span>"
+    else:
+        lhs = "log(ridership)"
+        def term_str(row):
+            feat_raw = row["variable"][4:]  # strip leading 'log_'
+            return f"<span style='color:#94a3b8'> · log({feat_raw} + {log_offset})</span>"
+
     html_parts = [
         f"<div style='line-height:2'><span style='color:#f1f5f9;font-size:14px'>"
-        f"log(ridership) = <span style='color:#fbbf24'>{intercept:+.4f}</span></span></div>"
+        f"{lhs} = <span style='color:#fbbf24'>{intercept:+.4f}</span></span></div>"
     ]
     for _, row in coef_df[coef_df["variable"] != "const"].iterrows():
         sign = "+" if row["coef"] >= 0 else "−"
-        feat_raw = row["variable"][4:]  # strip leading 'log_'
         coef_color = (
             "#4ade80" if row["significant"] and row["coef"] > 0
             else ("#f87171" if row["significant"] and row["coef"] < 0 else "#94a3b8")
@@ -162,7 +194,7 @@ def render_model_results(model_result: ModelResult, coef_df: pd.DataFrame,
             f"<div style='line-height:2;padding-left:16px'>"
             f"<span style='color:#64748b'>{sign} </span>"
             f"<span style='color:{coef_color}'>{abs(row['coef']):.4f}</span>"
-            f"<span style='color:#94a3b8'> · log({feat_raw} + {log_offset})</span>"
+            + term_str(row) +
             f"</div>"
         )
     legend = (
@@ -189,7 +221,10 @@ def render_model_results(model_result: ModelResult, coef_df: pd.DataFrame,
     c5.metric("F p-value",    f"{model_result.f_pvalue:.4f}")
 
     # ── Coefficient chart ─────────────────────────────────────────────────
-    st.subheader("Elasticity Coefficients (95% CI)")
+    chart_title = "Elasticity Coefficients (95% CI)" if model_spec == "log-log" else "Coefficients (95% CI)"
+    hover_label = "Elasticity" if model_spec == "log-log" else "Coefficient"
+    xaxis_label = "Elasticity estimate" if model_spec == "log-log" else "Coefficient estimate"
+    st.subheader(chart_title)
     plot_df = coef_df[coef_df["variable"] != "const"].copy()
     plot_df = plot_df.sort_values("coef", key=abs, ascending=True)
     bar_colors = [
@@ -208,12 +243,12 @@ def render_model_results(model_result: ModelResult, coef_df: pd.DataFrame,
             arrayminus=(plot_df["coef"] - plot_df["ci_lo"]).tolist(),
             color="#475569", thickness=2,
         ),
-        hovertemplate="<b>%{y}</b><br>Elasticity: %{x:.4f}<extra></extra>",
+        hovertemplate=f"<b>%{{y}}</b><br>{hover_label}: %{{x:.4f}}<extra></extra>",
     ))
     fig_coef.add_vline(x=0, line_color="#475569", line_width=1)
     fig_coef.update_layout(
         plot_bgcolor="#0f172a", paper_bgcolor="#0f172a", font_color="#e2e8f0",
-        xaxis_title="Elasticity estimate",
+        xaxis_title=xaxis_label,
         height=max(300, len(plot_df) * 38),
         margin=dict(l=0, r=20, t=10, b=40),
     )
@@ -223,7 +258,7 @@ def render_model_results(model_result: ModelResult, coef_df: pd.DataFrame,
     st.subheader("Stations — Actual vs Predicted")
     station_df = df[["display_name", "source", "entry"]].copy()
     station_df["predicted"] = df.apply(
-        lambda row: predict_ridership(coef_df, {f: row[f] for f in selected_features}, log_offset),
+        lambda row: predict_ridership(coef_df, {f: row[f] for f in selected_features}, log_offset, model_spec),
         axis=1,
     )
     station_df["residual"]    = station_df["entry"] - station_df["predicted"]
@@ -240,7 +275,8 @@ def render_model_results(model_result: ModelResult, coef_df: pd.DataFrame,
 
 
 def render_station_explorer(df: pd.DataFrame, coef_df: pd.DataFrame,
-                             selected_features: list[str], log_offset: float) -> None:
+                             selected_features: list[str], log_offset: float,
+                             model_spec: str = "log-log") -> None:
     st.subheader("Station Explorer")
     selected_station = st.selectbox("Select a station", df["display_name"].tolist(), key="explorer_station")
     row = df[df["display_name"] == selected_station].iloc[0]
@@ -249,7 +285,6 @@ def render_station_explorer(df: pd.DataFrame, coef_df: pd.DataFrame,
     col_info, col_pred = st.columns(2)
     with col_info:
         st.markdown("**Station Info**")
-        #st.write(f"Source: `{row['source']}`")
         if "line_code" in row.index:
             st.write(f"Line code: `{row['line_code']}`")
         st.markdown("**Feature Values**")
@@ -260,7 +295,7 @@ def render_station_explorer(df: pd.DataFrame, coef_df: pd.DataFrame,
 
     with col_pred:
         actual    = float(row["entry"])
-        predicted = predict_ridership(coef_df, feat_data, log_offset)
+        predicted = predict_ridership(coef_df, feat_data, log_offset, model_spec)
         residual  = actual - predicted
         pct_err   = residual / actual * 100
         st.markdown("**Prediction**")
@@ -271,18 +306,31 @@ def render_station_explorer(df: pd.DataFrame, coef_df: pd.DataFrame,
         m3.metric("Residual", f"{residual:+,.0f}")
         m4.metric("% Error",  f"{pct_err:+.1f}%")
 
-    st.subheader("Elasticity Contribution per Feature")
-    st.caption("α_i · log(x_i + offset) for this station.")
+    if model_spec == "log-log":
+        contrib_section_title = "Elasticity Contribution per Feature"
+        contrib_caption = "α_i · log(x_i + offset) for this station."
+        xaxis_contrib = "α_i · log(x_i + offset)"
+    else:
+        contrib_section_title = "Coefficient Contribution per Feature"
+        contrib_caption = "β_i · x_i for this station."
+        xaxis_contrib = "β_i · x_i"
+
+    st.subheader(contrib_section_title)
+    st.caption(contrib_caption)
     contrib_rows = []
     for feat, val in feat_data.items():
-        log_feat = f"log_{feat}"
-        coef_row = coef_df[coef_df["variable"] == log_feat]
+        var_name = f"log_{feat}" if model_spec == "log-log" else feat
+        coef_row = coef_df[coef_df["variable"] == var_name]
         if coef_row.empty:
             continue
         coef_val = float(coef_row["coef"].values[0])
+        if model_spec == "log-log":
+            contribution = coef_val * float(np.log(max(val + log_offset, 1e-9)))
+        else:
+            contribution = coef_val * float(val)
         contrib_rows.append({
             "Feature":      feat,
-            "Contribution": coef_val * float(np.log(max(val + log_offset, 1e-9))),
+            "Contribution": contribution,
             "Coef":         coef_val,
         })
     contrib_df = pd.DataFrame(contrib_rows).sort_values("Contribution", key=abs, ascending=True)
@@ -296,7 +344,7 @@ def render_station_explorer(df: pd.DataFrame, coef_df: pd.DataFrame,
     fig_contrib.add_vline(x=0, line_color="#475569", line_width=1)
     fig_contrib.update_layout(
         plot_bgcolor="#0f172a", paper_bgcolor="#0f172a", font_color="#e2e8f0",
-        xaxis_title="α_i · log(x_i + offset)",
+        xaxis_title=xaxis_contrib,
         height=max(250, len(contrib_df) * 38),
         margin=dict(l=0, r=20, t=10, b=40),
     )
@@ -304,14 +352,15 @@ def render_station_explorer(df: pd.DataFrame, coef_df: pd.DataFrame,
 
 
 def render_whatif(df: pd.DataFrame, coef_df: pd.DataFrame,
-                  selected_features: list[str], log_offset: float) -> None:
+                  selected_features: list[str], log_offset: float,
+                  model_spec: str = "log-log") -> None:
     st.subheader("What-if Simulator")
     st.caption("Choose a base station, adjust sliders, see how predicted ridership changes.")
 
     base_station = st.selectbox("Base station", df["display_name"].tolist(), key="whatif_station")
     base_row = df[df["display_name"] == base_station].iloc[0]
     base_feat_vals = {f: float(base_row[f]) for f in selected_features if f in base_row.index}
-    base_pred = predict_ridership(coef_df, base_feat_vals, log_offset)
+    base_pred = predict_ridership(coef_df, base_feat_vals, log_offset, model_spec)
 
     # Reset sliders to the new station's original values when the station changes
     if st.session_state.get("_whatif_prev_station") != base_station:
@@ -336,7 +385,7 @@ def render_whatif(df: pd.DataFrame, coef_df: pd.DataFrame,
             value=float(base_val), step=step, key=f"slider_{feat}",
         )
 
-    new_pred   = predict_ridership(coef_df, new_vals, log_offset)
+    new_pred   = predict_ridership(coef_df, new_vals, log_offset, model_spec)
     abs_change = new_pred - base_pred
     pct_change = abs_change / base_pred * 100 if base_pred > 0 else 0.0
 
@@ -348,32 +397,54 @@ def render_whatif(df: pd.DataFrame, coef_df: pd.DataFrame,
     o3.metric("Change",          f"{abs_change:+,.0f}")
     o4.metric("% Change",        f"{pct_change:+.1f}%")
 
-    st.subheader("Elasticity Impact per Feature")
-    st.caption("α_i × Δ%X_i — point elasticity approximation per feature.")
-    impact_rows = []
-    for feat in selected_features:
-        base_val = base_feat_vals.get(feat, 0.0)
-        new_val  = new_vals.get(feat, 0.0)
-        coef_row = coef_df[coef_df["variable"] == f"log_{feat}"]
-        if coef_row.empty:
-            continue
-        coef_val = float(coef_row["coef"].values[0])
-        pct_x    = (new_val - base_val) / (base_val + 1e-9) * 100
-        impact_rows.append({
-            "Feature":               feat,
-            "Base value":            base_val,
-            "New value":             new_val,
-            "Δ% feature":            round(pct_x, 1),
-            "Elasticity (α)":        round(coef_val, 4),
-            "Expected Δ% ridership": round(elasticity_impact(coef_val, pct_x), 2),
-        })
-    st.dataframe(pd.DataFrame(impact_rows), use_container_width=True, hide_index=True)
+    if model_spec == "log-log":
+        st.subheader("Elasticity Impact per Feature")
+        st.caption("α_i × Δ%X_i — point elasticity approximation per feature.")
+        impact_rows = []
+        for feat in selected_features:
+            base_val = base_feat_vals.get(feat, 0.0)
+            new_val  = new_vals.get(feat, 0.0)
+            coef_row = coef_df[coef_df["variable"] == f"log_{feat}"]
+            if coef_row.empty:
+                continue
+            coef_val = float(coef_row["coef"].values[0])
+            pct_x    = (new_val - base_val) / (base_val + 1e-9) * 100
+            impact_rows.append({
+                "Feature":               feat,
+                "Base value":            base_val,
+                "New value":             new_val,
+                "Δ% feature":            round(pct_x, 1),
+                "Elasticity (α)":        round(coef_val, 4),
+                "Expected Δ% ridership": round(elasticity_impact(coef_val, pct_x), 2),
+            })
+        st.dataframe(pd.DataFrame(impact_rows), use_container_width=True, hide_index=True)
+    else:
+        st.subheader("Coefficient Impact per Feature")
+        st.caption("β_i × Δx_i — marginal effect per feature.")
+        impact_rows = []
+        for feat in selected_features:
+            base_val = base_feat_vals.get(feat, 0.0)
+            new_val  = new_vals.get(feat, 0.0)
+            coef_row = coef_df[coef_df["variable"] == feat]
+            if coef_row.empty:
+                continue
+            coef_val  = float(coef_row["coef"].values[0])
+            delta_x   = new_val - base_val
+            impact_rows.append({
+                "Feature":                    feat,
+                "Base value":                 base_val,
+                "New value":                  new_val,
+                "Δ feature":                  round(delta_x, 2),
+                "Coefficient (β)":            round(coef_val, 4),
+                "Expected Δ ridership":       round(coef_val * delta_x, 0),
+            })
+        st.dataframe(pd.DataFrame(impact_rows), use_container_width=True, hide_index=True)
 
 
 def main() -> None:
     st.set_page_config(page_title="Bangkok Ridership Elasticity", layout="wide", page_icon="🚉")
     df = load_data()
-    selected_features, log_offset, sig_level, endog_features, instruments = build_sidebar(df)
+    selected_features, log_offset, sig_level, model_spec, endog_features, instruments = build_sidebar(df)
 
     st.title("🚉 Bangkok Ridership Elasticity Dashboard")
 
@@ -382,14 +453,18 @@ def main() -> None:
         return
 
     model_result, coef_df = run_model(
-        df, selected_features, endog_features, instruments, log_offset, sig_level
+        df, selected_features, endog_features, instruments, log_offset, sig_level, model_spec
     )
 
-    # Model type badge in main area
+    # Model type / spec badges
     badge_color = "#38bdf8" if model_result.model_type == "OLS" else "#a78bfa"
+    spec_color  = "#34d399" if model_spec == "log-log" else "#fb923c"
     st.markdown(
         f"<span style='background:{badge_color};color:#0f172a;padding:3px 10px;"
-        f"border-radius:12px;font-size:12px;font-weight:700'>{model_result.model_type}</span>",
+        f"border-radius:12px;font-size:12px;font-weight:700'>{model_result.model_type}</span>"
+        f"&nbsp;"
+        f"<span style='background:{spec_color};color:#0f172a;padding:3px 10px;"
+        f"border-radius:12px;font-size:12px;font-weight:700'>{model_spec}</span>",
         unsafe_allow_html=True,
     )
 
@@ -397,9 +472,9 @@ def main() -> None:
     with tab1:
         render_model_results(model_result, coef_df, df, selected_features, log_offset)
     with tab2:
-        render_station_explorer(df, coef_df, selected_features, log_offset)
+        render_station_explorer(df, coef_df, selected_features, log_offset, model_spec)
     with tab3:
-        render_whatif(df, coef_df, selected_features, log_offset)
+        render_whatif(df, coef_df, selected_features, log_offset, model_spec)
 
 
 if __name__ == "__main__":
