@@ -17,6 +17,7 @@ from model import (
     fit_iv_model,
     fit_linear_model,
     fit_model,
+    fit_semi_log_model,
     predict_ridership,
 )
 
@@ -76,7 +77,7 @@ def build_sidebar(df: pd.DataFrame) -> tuple:
     st.sidebar.subheader("Model")
     model_spec = st.sidebar.radio(
         "Specification",
-        options=["log-log", "linear"],
+        options=["log-log", "semi-log", "linear"],
         index=0,
         horizontal=True,
         key="model_spec",
@@ -144,9 +145,11 @@ def run_model(
     sig_level: float,
     model_spec: str = "log-log",
 ) -> tuple[ModelResult, pd.DataFrame]:
-    """Choose OLS/IV and log-log/linear based on sidebar state and refit."""
+    """Choose OLS/IV and log-log/semi-log/linear based on sidebar state and refit."""
     if model_spec == "linear":
         return fit_linear_model(df, selected_features, sig_level)
+    if model_spec == "semi-log":
+        return fit_semi_log_model(df, selected_features, log_offset, sig_level)
     use_iv = bool(
         endog_features
         and all(endog in instruments and instruments[endog] for endog in endog_features)
@@ -174,7 +177,12 @@ def render_model_results(model_result: ModelResult, coef_df: pd.DataFrame,
         lhs = "ridership"
         def term_str(row):
             return f"<span style='color:#94a3b8'> · {row['variable']}</span>"
-    else:
+    elif model_spec == "semi-log":
+        lhs = "ridership"
+        def term_str(row):
+            feat_raw = row["variable"][4:]  # strip leading 'log_'
+            return f"<span style='color:#94a3b8'> · log({feat_raw} + {log_offset})</span>"
+    else:  # log-log
         lhs = "log(ridership)"
         def term_str(row):
             feat_raw = row["variable"][4:]  # strip leading 'log_'
@@ -303,26 +311,26 @@ def render_station_explorer(df: pd.DataFrame, coef_df: pd.DataFrame,
         m3.metric("Residual", f"{residual:+,.0f}")
         m4.metric("% Error",  f"{pct_err:+.1f}%")
 
-    if model_spec == "log-log":
-        contrib_caption = "α_i · log(x_i + offset) for this station."
-        contrib_xaxis  = "α_i · log(x_i + offset)"
-    else:
+    if model_spec == "linear":
         contrib_caption = "β_i · x_i for this station."
         contrib_xaxis  = "β_i · x_i"
+    else:  # log-log or semi-log
+        contrib_caption = "β_i · log(x_i + offset) for this station."
+        contrib_xaxis  = "β_i · log(x_i + offset)"
 
     st.subheader("Elasticity Contribution per Feature")
     st.caption(contrib_caption)
     contrib_rows = []
     for feat, val in feat_data.items():
-        var_name = f"log_{feat}" if model_spec == "log-log" else feat
+        var_name = feat if model_spec == "linear" else f"log_{feat}"
         coef_row = coef_df[coef_df["variable"] == var_name]
         if coef_row.empty:
             continue
         coef_val = float(coef_row["coef"].values[0])
         contribution = (
-            coef_val * float(np.log(max(val + log_offset, 1e-9)))
-            if model_spec == "log-log"
-            else coef_val * float(val)
+            coef_val * float(val)
+            if model_spec == "linear"
+            else coef_val * float(np.log(max(val + log_offset, 1e-9)))
         )
         contrib_rows.append({"Feature": feat, "Contribution": contribution, "Coef": coef_val})
     contrib_df = pd.DataFrame(contrib_rows).sort_values("Contribution", key=abs, ascending=True)
@@ -392,19 +400,25 @@ def render_whatif(df: pd.DataFrame, coef_df: pd.DataFrame,
     st.subheader("Elasticity Impact per Feature")
     if model_spec == "log-log":
         st.caption("α_i × Δ%X_i — point elasticity approximation per feature.")
+    elif model_spec == "semi-log":
+        st.caption("Point elasticity (β_i / ŷ) × Δ%X_i — evaluated at base station values.")
     else:
         st.caption("Point elasticity (β_i × x_i / ŷ) × Δ%X_i — evaluated at base station values.")
     impact_rows = []
     for feat in selected_features:
         base_val = base_feat_vals.get(feat, 0.0)
         new_val  = new_vals.get(feat, 0.0)
-        var_name = f"log_{feat}" if model_spec == "log-log" else feat
+        var_name = feat if model_spec == "linear" else f"log_{feat}"
         coef_row = coef_df[coef_df["variable"] == var_name]
         if coef_row.empty:
             continue
         coef_val = float(coef_row["coef"].values[0])
-        # For log-log α is already an elasticity; for linear compute point elasticity at base
-        elasticity = coef_val if model_spec == "log-log" else coef_val * base_val / (base_pred + 1e-9)
+        if model_spec == "log-log":
+            elasticity = coef_val                                        # α already is elasticity
+        elif model_spec == "semi-log":
+            elasticity = coef_val / (base_pred + 1e-9)                  # β / ŷ
+        else:  # linear
+            elasticity = coef_val * base_val / (base_pred + 1e-9)       # β · x / ŷ
         pct_x = (new_val - base_val) / (base_val + 1e-9) * 100
         impact_rows.append({
             "Feature":               feat,
@@ -434,7 +448,7 @@ def main() -> None:
 
     # Model type / spec badges
     badge_color = "#38bdf8" if model_result.model_type == "OLS" else "#a78bfa"
-    spec_color  = "#34d399" if model_spec == "log-log" else "#fb923c"
+    spec_color  = "#34d399" if model_spec == "log-log" else ("#a78bfa" if model_spec == "semi-log" else "#fb923c")
     st.markdown(
         f"<span style='background:{badge_color};color:#0f172a;padding:3px 10px;"
         f"border-radius:12px;font-size:12px;font-weight:700'>{model_result.model_type}</span>"

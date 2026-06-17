@@ -125,6 +125,60 @@ def fit_linear_model(
     return model_result, coef_df.reset_index(drop=True)
 
 
+def fit_semi_log_model(
+    df: pd.DataFrame,
+    features: list,
+    log_offset: float = 1.0,
+    sig_level: float = 0.05,
+) -> tuple:
+    """
+    Fit a semi-log OLS model (raw y, log-transformed X) with HC3 robust SEs.
+
+    Equation: ridership = α + β_1·log(x_1 + offset) + ...
+
+    Returns
+    -------
+    ModelResult, coef_df
+        'variable' values are 'const' or 'log_{feature_name}'
+    """
+    if not features:
+        raise ValueError("features must be a non-empty list")
+    X = df[features].apply(lambda s: np.log(s + log_offset))
+    X.columns = [f"log_{c}" for c in features]
+    X = sm.add_constant(X)
+    y = df["entry"].copy()
+    y.name = "entry"
+
+    data = pd.concat([y, X], axis=1).dropna()
+    y_clean = data.iloc[:, 0]
+    X_clean = data.iloc[:, 1:]
+
+    res = sm.OLS(y_clean, X_clean).fit(cov_type="HC3")
+
+    ci = res.conf_int()
+    coef_df = pd.DataFrame({
+        "variable": res.params.index,
+        "coef":     res.params.values,
+        "se":       res.bse.values,
+        "t":        res.tvalues.values,
+        "p":        res.pvalues.values,
+        "ci_lo":    ci[0].values,
+        "ci_hi":    ci[1].values,
+    })
+    coef_df["significant"] = coef_df["p"] < sig_level
+
+    model_result = ModelResult(
+        rsquared=float(res.rsquared),
+        rsquared_adj=float(res.rsquared_adj),
+        nobs=int(res.nobs),
+        fvalue=float(res.fvalue),
+        f_pvalue=float(res.f_pvalue),
+        model_type="OLS",
+        model_spec="semi-log",
+    )
+    return model_result, coef_df.reset_index(drop=True)
+
+
 def fit_iv_model(
     df: pd.DataFrame,
     exog_features: list,
@@ -264,6 +318,15 @@ def predict_ridership(
             row = coef_df[coef_df["variable"] == feat]
             if not row.empty:
                 pred += float(row["coef"].values[0]) * float(val)
+        return pred
+    elif model_spec == "semi-log":
+        # y = α + Σ β_i · log(x_i + offset)  — no exp()
+        pred = intercept
+        for feat, val in feature_values.items():
+            row = coef_df[coef_df["variable"] == f"log_{feat}"]
+            if not row.empty:
+                safe_val = max(float(val) + log_offset, 1e-9)
+                pred += float(row["coef"].values[0]) * np.log(safe_val)
         return pred
     else:  # log-log
         log_pred = intercept
