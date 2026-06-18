@@ -26,12 +26,12 @@ DATA_PATH = "Output/combined_station_summary_expanded_rev10.csv"
 NON_FEATURE_COLS = {"entry", "source", "line_code", "station_name", "station", "display_name"}
 
 DEFAULT_FEATURES = [
-    # Sidewalk quality — surface (% good rating)
-    "surface_pct_1",
-    # Sidewalk quality — shade
-    "shade_pct_1",
-    # Sidewalk quality — obstacle-free (% good rating)
-    "obs_pct_1",
+    # Sidewalk quality — surface (length with poor rating)
+    "sidewalk_length_surface_neg1",
+    # Sidewalk quality — shade (length with poor rating)
+    "sidewalk_length_shade_neg1",
+    # Sidewalk quality — obstacle-free (length with poor rating)
+    "sidewalk_length_obstacle_neg1",
     # Last-mile feeder modes
     "win_count",
     "bike_share_count",
@@ -227,6 +227,35 @@ def render_model_results(model_result: ModelResult, coef_df: pd.DataFrame,
     c3.metric("Observations", model_result.nobs)
     c4.metric("F-statistic",  f"{model_result.fvalue:.2f}")
     c5.metric("F p-value",    f"{model_result.f_pvalue:.4f}")
+
+    # ── Coefficient table ─────────────────────────────────────────────────
+    st.subheader("Coefficient Summary")
+    tbl = coef_df[coef_df["variable"] != "const"].copy()
+    tbl = tbl[["variable", "coef", "se", "t", "p", "ci_lo", "ci_hi", "significant"]].copy()
+    tbl.columns = ["Variable", "Coef", "Std Err", "t-stat", "p-value", "CI low (95%)", "CI high (95%)", "Significant"]
+
+    def _style_pval(val):
+        if val < 0.01:
+            return "color: #4ade80; font-weight: bold"
+        if val < 0.05:
+            return "color: #86efac"
+        if val < 0.1:
+            return "color: #fbbf24"
+        return "color: #94a3b8"
+
+    styled = (
+        tbl.style
+        .format({
+            "Coef": "{:.4f}", "Std Err": "{:.4f}", "t-stat": "{:.3f}",
+            "p-value": "{:.4f}", "CI low (95%)": "{:.4f}", "CI high (95%)": "{:.4f}",
+        })
+        .applymap(_style_pval, subset=["p-value"])
+    )
+    st.dataframe(styled, use_container_width=True, hide_index=True)
+    st.caption(
+        f"R² = {model_result.rsquared:.4f} | Adj R² = {model_result.rsquared_adj:.4f} | "
+        f"n = {model_result.nobs} | F = {model_result.fvalue:.2f} | F p-value = {model_result.f_pvalue:.4f}"
+    )
 
     # ── Coefficient chart ─────────────────────────────────────────────────
     st.subheader("Elasticity Coefficients (95% CI)")
