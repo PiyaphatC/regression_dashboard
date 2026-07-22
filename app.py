@@ -23,7 +23,34 @@ from model import (
 
 DATA_PATH = "Output/combined_station_summary_expanded_rev13.csv"
 
-NON_FEATURE_COLS = {"entry", "source", "line_code", "station_name", "station", "display_name"}
+NON_FEATURE_COLS = {"entry", "source", "line_code", "station_name", "station", "display_name",
+                    "line_color", "station_type"}
+
+# Mapping from line_code prefix → (line colour, system type)
+_LINE_PREFIX_MAP: dict[str, tuple[str, str]] = {
+    "BL": ("🔵 Blue",    "MRT"),
+    "PP": ("🟣 Purple",  "MRT"),
+    "N":  ("🟢 Green",   "BTS"),
+    "E":  ("🟢 Green",   "BTS"),
+    "S":  ("🟢 Green",   "BTS"),
+    "W":  ("🟢 Green",   "BTS"),
+    "CEN":("🟢 Green",   "BTS"),
+    "G":  ("🟡 Gold",    "BTS"),
+    "A":  ("🔴 Airport", "ARL"),
+    "PK": ("🩷 Pink",    "Monorail"),
+    "YL": ("🟡 Yellow",  "Monorail"),
+    "RN": ("🔴 Red",     "SRT"),
+    "RW": ("🔴 Red",     "SRT"),
+    "MT": ("🟡 Yellow",  "Monorail"),
+}
+
+
+def _classify_line(code: str) -> tuple[str, str]:
+    """Return (line_color, station_type) from a line_code like 'BL01'."""
+    for prefix in sorted(_LINE_PREFIX_MAP, key=len, reverse=True):  # longest first
+        if code.startswith(prefix):
+            return _LINE_PREFIX_MAP[prefix]
+    return ("Other", "Other")
 
 DEFAULT_FEATURES = [
     # Sidewalk quality — surface (length with poor rating)
@@ -46,6 +73,9 @@ def load_data() -> pd.DataFrame:
     df = pd.read_csv(DATA_PATH, encoding="utf-8-sig")
     df.columns = df.columns.str.replace("\ufeff", "", regex=False).str.strip()
     df = df.dropna(subset=["entry"])
+    classified = df["line_code"].apply(_classify_line)
+    df["line_color"]   = classified.apply(lambda x: x[0])
+    df["station_type"] = classified.apply(lambda x: x[1])
     df["display_name"] = df["line_code"] + " — " + df["station_name"]
     return df
 
@@ -64,6 +94,7 @@ def build_sidebar(df: pd.DataFrame) -> tuple:
 
     Returns
     -------
+    selected_stations : list[str]
     selected_features : list[str]
     log_offset        : float
     sig_level         : float
@@ -82,6 +113,30 @@ def build_sidebar(df: pd.DataFrame) -> tuple:
         horizontal=True,
         key="model_spec",
     )
+
+    # ── Station filter ────────────────────────────────────────────────────
+    st.sidebar.subheader("Station Filter")
+    all_types  = sorted(df["station_type"].unique())
+    all_colors = sorted(df["line_color"].unique())
+
+    sel_types = st.sidebar.multiselect(
+        "System type", options=all_types, default=all_types, key="filter_type",
+    )
+    sel_colors = st.sidebar.multiselect(
+        "Line colour", options=all_colors, default=all_colors, key="filter_color",
+    )
+
+    filtered_stations = df[
+        df["station_type"].isin(sel_types) & df["line_color"].isin(sel_colors)
+    ]["display_name"].tolist()
+
+    sel_stations = st.sidebar.multiselect(
+        "Stations",
+        options=filtered_stations,
+        default=filtered_stations,
+        key="filter_stations",
+    )
+    st.sidebar.caption(f"{len(sel_stations)} / {len(df)} stations selected")
 
     # ── Features ──────────────────────────────────────────────────────────
     st.sidebar.subheader("Features")
@@ -133,7 +188,7 @@ def build_sidebar(df: pd.DataFrame) -> tuple:
                 if chosen:
                     instruments[endog_feat] = chosen
 
-    return selected_features, log_offset, sig_level, model_spec, endog_features, instruments
+    return sel_stations, selected_features, log_offset, sig_level, model_spec, endog_features, instruments
 
 
 def run_model(
@@ -249,7 +304,7 @@ def render_model_results(model_result: ModelResult, coef_df: pd.DataFrame,
             "Coef": "{:.4f}", "Std Err": "{:.4f}", "t-stat": "{:.3f}",
             "p-value": "{:.4f}", "CI low (95%)": "{:.4f}", "CI high (95%)": "{:.4f}",
         })
-        .applymap(_style_pval, subset=["p-value"])
+        .map(_style_pval, subset=["p-value"])
     )
     st.dataframe(styled, use_container_width=True, hide_index=True)
     st.caption(
@@ -462,13 +517,18 @@ def render_whatif(df: pd.DataFrame, coef_df: pd.DataFrame,
 
 def main() -> None:
     st.set_page_config(page_title="Bangkok Ridership Elasticity", layout="wide", page_icon="🚉")
-    df = load_data()
-    selected_features, log_offset, sig_level, model_spec, endog_features, instruments = build_sidebar(df)
+    df_all = load_data()
+    sel_stations, selected_features, log_offset, sig_level, model_spec, endog_features, instruments = build_sidebar(df_all)
 
     st.title("🚉 Bangkok Ridership Elasticity Dashboard")
 
     if not selected_features:
         st.warning("Select at least one feature in the sidebar.")
+        return
+
+    df = df_all[df_all["display_name"].isin(sel_stations)].copy()
+    if df.empty:
+        st.warning("No stations selected. Adjust the station filter in the sidebar.")
         return
 
     model_result, coef_df = run_model(
