@@ -21,10 +21,10 @@ from model import (
     predict_ridership,
 )
 
-DATA_PATH = "Output/combined_station_summary_expanded_rev13.csv"
+DATA_PATH = "Output/combined_station_summary_expanded_rev14.csv"
 
 NON_FEATURE_COLS = {"entry", "source", "line_code", "station_name", "station", "display_name",
-                    "line_color", "station_type"}
+                    "line_color", "station_type", "station_typology"}
 
 # Mapping from line_code prefix → (line colour, system type)
 _LINE_PREFIX_MAP: dict[str, tuple[str, str]] = {
@@ -116,8 +116,9 @@ def build_sidebar(df: pd.DataFrame) -> tuple:
 
     # ── Station filter ────────────────────────────────────────────────────
     st.sidebar.subheader("Station Filter")
-    all_types  = sorted(df["station_type"].unique())
-    all_colors = sorted(df["line_color"].unique())
+    all_types      = sorted(df["station_type"].unique())
+    all_colors     = sorted(df["line_color"].unique())
+    all_typologies = sorted(df["station_typology"].dropna().unique())
 
     sel_types = st.sidebar.multiselect(
         "System type", options=all_types, default=all_types, key="filter_type",
@@ -125,9 +126,14 @@ def build_sidebar(df: pd.DataFrame) -> tuple:
     sel_colors = st.sidebar.multiselect(
         "Line colour", options=all_colors, default=all_colors, key="filter_color",
     )
+    sel_typologies = st.sidebar.multiselect(
+        "Station typology", options=all_typologies, default=all_typologies, key="filter_typology",
+    )
 
     filtered_stations = df[
-        df["station_type"].isin(sel_types) & df["line_color"].isin(sel_colors)
+        df["station_type"].isin(sel_types)
+        & df["line_color"].isin(sel_colors)
+        & df["station_typology"].isin(sel_typologies)
     ]["display_name"].tolist()
 
     sel_stations = st.sidebar.multiselect(
