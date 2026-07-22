@@ -69,8 +69,8 @@ DEFAULT_FEATURES = [
 
 
 @st.cache_data
-def load_data() -> pd.DataFrame:
-    df = pd.read_csv(DATA_PATH, encoding="utf-8-sig")
+def load_data(path: str = DATA_PATH) -> pd.DataFrame:
+    df = pd.read_csv(path, encoding="utf-8-sig")
     df.columns = df.columns.str.replace("\ufeff", "", regex=False).str.strip()
     df = df.dropna(subset=["entry"])
     classified = df["line_code"].apply(_classify_line)
