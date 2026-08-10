@@ -568,6 +568,38 @@ def render_buffer_sensitivity(
 ) -> None:
     """Tab 4: show how coefficients change across buffer radii."""
     st.subheader("Sensitivity to Buffer Radius")
+
+    with st.expander("ℹ️ What is Buffer Sensitivity?", expanded=False):
+        st.markdown("""
+**Buffer radius** defines the circular area around each station within which
+POIs, road segments, and traffic zones are counted. The default is **500 m**,
+but the "right" radius is an empirical question — it depends on how far
+passengers actually walk.
+
+This tab re-estimates the regression model at every pre-computed radius
+(100 m – 1,500 m) and shows:
+
+1. **Model Fit (R² / Adj R²)** — does overall explanatory power improve or
+   degrade as we widen the buffer? A peak in R² suggests the radius that
+   best captures the station's catchment area.
+
+2. **Coefficient Sensitivity** — how each feature's elasticity estimate
+   changes with the buffer. A coefficient that is **stable** across radii is
+   robust; one that **flips sign or loses significance** may be an artefact
+   of the chosen radius.
+
+**How to read the charts:**
+- **Solid dots** = statistically significant at the chosen α level.
+- **Open dots** = not significant.
+- **Shaded bands** = 95 % confidence intervals — narrower bands mean more
+  precise estimates.
+- A coefficient **crossing zero** as the radius changes signals instability.
+
+**Practical use:** pick the radius where R² peaks (or plateaus) and key
+coefficients are significant and stable. This strengthens the argument that
+your elasticity estimates are not sensitive to an arbitrary boundary choice.
+        """)
+
     st.caption(
         "Each point shows the elasticity coefficient estimated at that buffer radius. "
         "Shaded bands are 95% confidence intervals. Solid dots = significant (p < α)."
