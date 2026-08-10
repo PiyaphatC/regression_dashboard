@@ -219,9 +219,11 @@ def build_sidebar(df: pd.DataFrame, radii_list: list[int] | None = None) -> tupl
         if st.sidebar.checkbox(feat, value=(feat in DEFAULT_FEATURES), key=f"feat_{feat}")
     ]
 
-    if st.sidebar.button("🎯 Optimize Variables", key="btn_optimize",
-                         help="Find the feature combination that maximises Adj R² (forward stepwise)"):
-        st.session_state["_run_optimize"] = True
+    st.sidebar.button(
+        "🎯 Optimize Variables", key="btn_optimize",
+        help="Find the feature combination that maximises Adj R² (forward stepwise)",
+        on_click=lambda: st.session_state.update({"_run_optimize": True}),
+    )
 
     st.sidebar.subheader("Parameters")
     sig_level  = float(st.sidebar.number_input("Significance level (α)", value=0.05, min_value=0.001, max_value=0.20, step=0.01))
