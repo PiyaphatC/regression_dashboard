@@ -42,6 +42,12 @@ Quality ratings follow a −1 / 0 / 1 scale:
 Percentage columns (`barrier_pct_*`, `shade_pct_*`, `obs_pct_*`) sum to ~100% per station.
 Length columns (`sidewalk_length_surface_*`, `sidewalk_length_shade_*`, `sidewalk_length_obstacle_*`) are in metres.
 
+## Adjustable Buffer Radius
+- `Output/features_by_radius.csv` contains pre-computed features at 15 radii (100m–1500m, step 100m)
+- Sidebar slider lets users pick a buffer radius; all model results update accordingly
+- Tab 4 ("Buffer Sensitivity") shows how R² and coefficients change across radii
+- Pre-computed via `buffer_radius_explorer/precompute_radii.py` in the main project repo
+
 ## Model Notes
 - All models use log-log specification: `log(y) ~ log(x + offset)` with offset = 1.0
 - `bus_stop_count` has a wrong-sign (negative) coefficient — use `bus_stop_mean_dist` instead if bus connectivity is needed

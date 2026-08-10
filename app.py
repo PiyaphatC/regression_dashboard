@@ -5,6 +5,8 @@ Bangkok BTS/MRT Ridership Elasticity Dashboard
 Run: streamlit run app.py
 """
 
+import os
+
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
@@ -22,9 +24,10 @@ from model import (
 )
 
 DATA_PATH = "Output/combined_station_summary_expanded_rev14.csv"
+RADII_PATH = "Output/features_by_radius.csv"
 
 NON_FEATURE_COLS = {"entry", "source", "line_code", "station_name", "station", "display_name",
-                    "line_color", "station_type", "station_typology"}
+                    "line_color", "station_type", "station_typology", "radius_m"}
 
 # Mapping from line_code prefix → (line colour, system type)
 _LINE_PREFIX_MAP: dict[str, tuple[str, str]] = {
@@ -80,15 +83,32 @@ def load_data(path: str = DATA_PATH) -> pd.DataFrame:
     return df
 
 
+@st.cache_data
+def load_radii_data(path: str = RADII_PATH) -> pd.DataFrame:
+    """Load the pre-computed multi-radius feature CSV."""
+    df = pd.read_csv(path, encoding="utf-8-sig")
+    df.columns = df.columns.str.replace("\ufeff", "", regex=False).str.strip()
+    df = df.dropna(subset=["entry"])
+    classified = df["line_code"].apply(_classify_line)
+    df["line_color"]   = classified.apply(lambda x: x[0])
+    df["station_type"] = classified.apply(lambda x: x[1])
+    df["display_name"] = df["line_code"] + " — " + df["station_name"]
+    return df
+
+
+def get_radii_list(df_radii: pd.DataFrame) -> list[int]:
+    return sorted(df_radii["radius_m"].unique().astype(int).tolist())
+
+
 def get_numeric_columns(df: pd.DataFrame) -> list[str]:
     """All numeric columns except 'entry' — instrument candidates."""
     return [
         c for c in df.select_dtypes(include="number").columns
-        if c != "entry"
+        if c not in ("entry", "radius_m")
     ]
 
 
-def build_sidebar(df: pd.DataFrame) -> tuple:
+def build_sidebar(df: pd.DataFrame, radii_list: list[int] | None = None) -> tuple:
     """
     Render sidebar controls.
 
@@ -101,6 +121,7 @@ def build_sidebar(df: pd.DataFrame) -> tuple:
     model_spec        : str  ("log-log" or "linear")
     endog_features    : list[str]   (subset of selected_features)
     instruments       : dict[str, list[str]]  {endog_feat: [instrument_cols]}
+    buffer_radius     : int          (selected buffer radius in metres)
     """
     st.sidebar.title("⚙️ Model Controls")
 
@@ -113,6 +134,20 @@ def build_sidebar(df: pd.DataFrame) -> tuple:
         horizontal=True,
         key="model_spec",
     )
+
+    # ── Buffer radius ─────────────────────────────────────────────────────
+    buffer_radius = 500  # default
+    if radii_list:
+        st.sidebar.subheader("Buffer Radius")
+        default_idx = radii_list.index(500) if 500 in radii_list else 0
+        buffer_radius = st.sidebar.select_slider(
+            "Radius (m)",
+            options=radii_list,
+            value=radii_list[default_idx],
+            key="buffer_radius",
+            help="Buffer radius around each station for POI/walkability/zone aggregation",
+        )
+        st.sidebar.caption(f"Buffer: {buffer_radius} m")
 
     # ── Station filter ────────────────────────────────────────────────────
     st.sidebar.subheader("Station Filter")
@@ -194,7 +229,7 @@ def build_sidebar(df: pd.DataFrame) -> tuple:
                 if chosen:
                     instruments[endog_feat] = chosen
 
-    return sel_stations, selected_features, log_offset, sig_level, model_spec, endog_features, instruments
+    return sel_stations, selected_features, log_offset, sig_level, model_spec, endog_features, instruments, buffer_radius
 
 
 def run_model(
@@ -521,10 +556,172 @@ def render_whatif(df: pd.DataFrame, coef_df: pd.DataFrame,
     st.dataframe(pd.DataFrame(impact_rows), use_container_width=True, hide_index=True)
 
 
+def render_buffer_sensitivity(
+    df_radii: pd.DataFrame,
+    selected_features: list[str],
+    sel_stations: list[str],
+    log_offset: float,
+    sig_level: float,
+    model_spec: str,
+    endog_features: list[str],
+    instruments: dict[str, list[str]],
+) -> None:
+    """Tab 4: show how coefficients change across buffer radii."""
+    st.subheader("Sensitivity to Buffer Radius")
+    st.caption(
+        "Each point shows the elasticity coefficient estimated at that buffer radius. "
+        "Shaded bands are 95% confidence intervals. Solid dots = significant (p < α)."
+    )
+
+    radii = sorted(df_radii["radius_m"].unique().astype(int))
+    rows = []
+    for r in radii:
+        df_r = df_radii[
+            (df_radii["radius_m"] == r) & df_radii["display_name"].isin(sel_stations)
+        ].copy()
+        if df_r.empty or len(df_r) < 3:
+            continue
+        try:
+            mr, cdf = run_model(df_r, selected_features, endog_features, instruments,
+                                log_offset, sig_level, model_spec)
+            for _, row in cdf[cdf["variable"] != "const"].iterrows():
+                rows.append({
+                    "radius_m": r,
+                    "variable": row["variable"],
+                    "coef": row["coef"],
+                    "ci_lo": row["ci_lo"],
+                    "ci_hi": row["ci_hi"],
+                    "p": row["p"],
+                    "significant": row["significant"],
+                })
+            rows.append({
+                "radius_m": r,
+                "variable": "__r2__",
+                "coef": mr.rsquared,
+                "ci_lo": mr.rsquared_adj,
+                "ci_hi": mr.nobs,
+                "p": 0,
+                "significant": True,
+            })
+        except Exception:
+            continue
+
+    if not rows:
+        st.warning("Could not fit models across radii with the current feature set.")
+        return
+
+    sens_df = pd.DataFrame(rows)
+
+    # ── R² trend ──────────────────────────────────────────────────────────
+    r2_df = sens_df[sens_df["variable"] == "__r2__"].copy()
+    sens_df = sens_df[sens_df["variable"] != "__r2__"]
+
+    if not r2_df.empty:
+        st.subheader("Model Fit across Radii")
+        fig_r2 = go.Figure()
+        fig_r2.add_trace(go.Scatter(
+            x=r2_df["radius_m"], y=r2_df["coef"],
+            mode="lines+markers", name="R²",
+            line=dict(color="#38bdf8", width=2),
+            marker=dict(size=8),
+        ))
+        fig_r2.add_trace(go.Scatter(
+            x=r2_df["radius_m"], y=r2_df["ci_lo"],
+            mode="lines+markers", name="Adj R²",
+            line=dict(color="#a78bfa", width=2, dash="dash"),
+            marker=dict(size=6),
+        ))
+        fig_r2.update_layout(
+            plot_bgcolor="#0f172a", paper_bgcolor="#0f172a", font_color="#e2e8f0",
+            xaxis_title="Buffer Radius (m)", yaxis_title="R²",
+            height=350, margin=dict(l=0, r=20, t=10, b=40),
+            legend=dict(x=0.02, y=0.98),
+        )
+        st.plotly_chart(fig_r2, use_container_width=True)
+
+    # ── Per-feature coefficient sensitivity ───────────────────────────────
+    st.subheader("Coefficient Sensitivity per Feature")
+    features_in_data = sorted(sens_df["variable"].unique())
+
+    # Let user pick which features to display (default: all)
+    show_features = st.multiselect(
+        "Features to display",
+        options=features_in_data,
+        default=features_in_data,
+        key="sens_features",
+    )
+    plot_df = sens_df[sens_df["variable"].isin(show_features)]
+
+    if plot_df.empty:
+        st.info("Select at least one feature above.")
+        return
+
+    colors = [
+        "#38bdf8", "#4ade80", "#f87171", "#fbbf24", "#a78bfa",
+        "#fb923c", "#2dd4bf", "#e879f9", "#94a3b8", "#34d399",
+        "#f472b6", "#818cf8", "#facc15", "#22d3ee", "#c084fc",
+    ]
+
+    fig = go.Figure()
+    for i, feat in enumerate(show_features):
+        fdf = plot_df[plot_df["variable"] == feat].sort_values("radius_m")
+        color = colors[i % len(colors)]
+        # CI band
+        fig.add_trace(go.Scatter(
+            x=list(fdf["radius_m"]) + list(fdf["radius_m"][::-1]),
+            y=list(fdf["ci_hi"]) + list(fdf["ci_lo"][::-1]),
+            fill="toself", fillcolor=color.replace(")", ",0.1)").replace("rgb", "rgba") if color.startswith("rgb") else color + "18",
+            line=dict(width=0), showlegend=False, hoverinfo="skip",
+        ))
+        # Line
+        fig.add_trace(go.Scatter(
+            x=fdf["radius_m"], y=fdf["coef"],
+            mode="lines+markers", name=feat,
+            line=dict(color=color, width=2),
+            marker=dict(
+                size=[10 if s else 6 for s in fdf["significant"]],
+                symbol=["circle" if s else "circle-open" for s in fdf["significant"]],
+                color=color,
+            ),
+            hovertemplate=f"<b>{feat}</b><br>Radius: %{{x}}m<br>Coef: %{{y:.4f}}<extra></extra>",
+        ))
+
+    fig.add_hline(y=0, line_color="#475569", line_width=1)
+    fig.update_layout(
+        plot_bgcolor="#0f172a", paper_bgcolor="#0f172a", font_color="#e2e8f0",
+        xaxis_title="Buffer Radius (m)", yaxis_title="Elasticity Coefficient",
+        height=500, margin=dict(l=0, r=20, t=10, b=40),
+        legend=dict(x=1.02, y=1, bordercolor="#334155", borderwidth=1),
+    )
+    st.plotly_chart(fig, use_container_width=True)
+
+    # ── Summary table ─────────────────────────────────────────────────────
+    st.subheader("Coefficient Table by Radius")
+    pivot = sens_df.pivot_table(index="variable", columns="radius_m", values="coef")
+    pivot.columns = [f"{int(c)}m" for c in pivot.columns]
+    st.dataframe(pivot.style.format("{:.4f}"), use_container_width=True)
+
+
 def main() -> None:
     st.set_page_config(page_title="Bangkok Ridership Elasticity", layout="wide", page_icon="🚉")
+
+    # Load multi-radius data if available, else fall back to single-radius rev14
+    has_radii = os.path.exists(RADII_PATH)
+    if has_radii:
+        df_radii = load_radii_data()
+        radii_list = get_radii_list(df_radii)
+    else:
+        df_radii = None
+        radii_list = None
+
     df_all = load_data()
-    sel_stations, selected_features, log_offset, sig_level, model_spec, endog_features, instruments = build_sidebar(df_all)
+    sel_stations, selected_features, log_offset, sig_level, model_spec, endog_features, instruments, buffer_radius = build_sidebar(
+        df_all, radii_list
+    )
+
+    # Use radius-specific data when available
+    if has_radii and df_radii is not None:
+        df_all = df_radii[df_radii["radius_m"] == buffer_radius].copy()
 
     st.title("🚉 Bangkok Ridership Elasticity Dashboard")
 
@@ -544,22 +741,39 @@ def main() -> None:
     # Model type / spec badges
     badge_color = "#38bdf8" if model_result.model_type == "OLS" else "#a78bfa"
     spec_color  = "#34d399" if model_spec == "log-log" else ("#a78bfa" if model_spec == "semi-log" else "#fb923c")
+    radius_badge = (
+        f"&nbsp;<span style='background:#fbbf24;color:#0f172a;padding:3px 10px;"
+        f"border-radius:12px;font-size:12px;font-weight:700'>{buffer_radius}m buffer</span>"
+        if has_radii else ""
+    )
     st.markdown(
         f"<span style='background:{badge_color};color:#0f172a;padding:3px 10px;"
         f"border-radius:12px;font-size:12px;font-weight:700'>{model_result.model_type}</span>"
         f"&nbsp;"
         f"<span style='background:{spec_color};color:#0f172a;padding:3px 10px;"
-        f"border-radius:12px;font-size:12px;font-weight:700'>{model_spec}</span>",
+        f"border-radius:12px;font-size:12px;font-weight:700'>{model_spec}</span>"
+        + radius_badge,
         unsafe_allow_html=True,
     )
 
-    tab1, tab2, tab3 = st.tabs(["Model Results", "Station Explorer", "What-if Simulator"])
-    with tab1:
+    tabs = ["Model Results", "Station Explorer", "What-if Simulator"]
+    if has_radii:
+        tabs.append("Buffer Sensitivity")
+    tab_objs = st.tabs(tabs)
+
+    with tab_objs[0]:
         render_model_results(model_result, coef_df, df, selected_features, log_offset)
-    with tab2:
+    with tab_objs[1]:
         render_station_explorer(df, coef_df, selected_features, log_offset, model_spec)
-    with tab3:
+    with tab_objs[2]:
         render_whatif(df, coef_df, selected_features, log_offset, model_spec)
+    if has_radii and len(tab_objs) > 3:
+        with tab_objs[3]:
+            render_buffer_sensitivity(
+                df_radii, selected_features, sel_stations,
+                log_offset, sig_level, model_spec,
+                endog_features, instruments,
+            )
 
 
 if __name__ == "__main__":
