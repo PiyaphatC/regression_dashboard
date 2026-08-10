@@ -108,6 +108,35 @@ def get_numeric_columns(df: pd.DataFrame) -> list[str]:
     ]
 
 
+def _forward_stepwise(df: pd.DataFrame, candidates: list[str],
+                      model_spec: str, log_offset: float, sig_level: float,
+                      max_features: int = 15) -> tuple[list[str], float]:
+    """Forward stepwise selection maximising Adj R².
+    Returns (best_features, best_adj_r2)."""
+    selected: list[str] = []
+    best_adj_r2 = -np.inf
+
+    for _ in range(min(max_features, len(candidates))):
+        improved = False
+        best_feat = None
+        for feat in candidates:
+            if feat in selected:
+                continue
+            trial = selected + [feat]
+            try:
+                mr, _ = run_model(df, trial, [], {}, log_offset, sig_level, model_spec)
+                if mr.rsquared_adj > best_adj_r2:
+                    best_adj_r2 = mr.rsquared_adj
+                    best_feat = feat
+                    improved = True
+            except Exception:
+                continue
+        if not improved or best_feat is None:
+            break
+        selected.append(best_feat)
+    return selected, best_adj_r2
+
+
 def build_sidebar(df: pd.DataFrame, radii_list: list[int] | None = None) -> tuple:
     """
     Render sidebar controls.
@@ -189,6 +218,10 @@ def build_sidebar(df: pd.DataFrame, radii_list: list[int] | None = None) -> tupl
         feat for feat in available
         if st.sidebar.checkbox(feat, value=(feat in DEFAULT_FEATURES), key=f"feat_{feat}")
     ]
+
+    if st.sidebar.button("🎯 Optimize Variables", key="btn_optimize",
+                         help="Find the feature combination that maximises Adj R² (forward stepwise)"):
+        st.session_state["_run_optimize"] = True
 
     st.sidebar.subheader("Parameters")
     sig_level  = float(st.sidebar.number_input("Significance level (α)", value=0.05, min_value=0.001, max_value=0.20, step=0.01))
@@ -730,6 +763,32 @@ def main() -> None:
         df_all = df_radii[df_radii["radius_m"] == buffer_radius].copy()
 
     st.title("🚉 Bangkok Ridership Elasticity Dashboard")
+
+    # ── Optimize variables (forward stepwise) ─────────────────────────────
+    if st.session_state.pop("_run_optimize", False):
+        df_opt = df_all[df_all["display_name"].isin(sel_stations)].copy()
+        if not df_opt.empty:
+            available_feats = [
+                c for c in df_opt.select_dtypes(include="number").columns
+                if c not in NON_FEATURE_COLS
+            ]
+            with st.spinner("Running forward stepwise selection..."):
+                opt_feats, opt_adj_r2 = _forward_stepwise(
+                    df_opt, available_feats, model_spec, log_offset, sig_level,
+                )
+            for feat in available_feats:
+                st.session_state[f"feat_{feat}"] = feat in opt_feats
+            st.session_state["_opt_result"] = (opt_feats, opt_adj_r2)
+            st.rerun()
+
+    opt_result = st.session_state.pop("_opt_result", None)
+    if opt_result:
+        opt_feats, opt_adj_r2 = opt_result
+        st.success(
+            f"**Optimized:** {len(opt_feats)} variables selected · "
+            f"Adj R² = {opt_adj_r2:.4f} · "
+            f"Features: {', '.join(opt_feats)}"
+        )
 
     if not selected_features:
         st.warning("Select at least one feature in the sidebar.")
