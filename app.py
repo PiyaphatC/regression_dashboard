@@ -754,6 +754,40 @@ def main() -> None:
         radii_list = None
 
     df_all = load_data()
+
+    # ── Pre-sidebar optimization pass ─────────────────────────────────────
+    # Must update checkbox session_state BEFORE build_sidebar renders them.
+    if st.session_state.pop("_run_optimize", False):
+        # Reconstruct the data slice using sidebar state from the previous run
+        _df_src = df_all
+        if has_radii and df_radii is not None:
+            _buf_r = st.session_state.get("buffer_radius", 500)
+            _df_src = df_radii[df_radii["radius_m"] == _buf_r].copy()
+            _df_src = _df_src.dropna(subset=["entry"])
+            _df_src["line_color"]   = _df_src["line_code"].apply(lambda c: _classify_line(c)[0])
+            _df_src["station_type"] = _df_src["line_code"].apply(lambda c: _classify_line(c)[1])
+            _df_src["display_name"] = _df_src["line_code"] + " — " + _df_src["station_name"]
+
+        # Use previous station selection from session state
+        _prev_stations = st.session_state.get("filter_stations")
+        if _prev_stations:
+            _df_src = _df_src[_df_src["display_name"].isin(_prev_stations)]
+
+        if not _df_src.empty:
+            available_feats = [
+                c for c in _df_src.select_dtypes(include="number").columns
+                if c not in NON_FEATURE_COLS
+            ]
+            _ms = st.session_state.get("model_spec", "log-log")
+            _lo = float(st.session_state.get("log_offset", 1.0))
+            _sl = float(st.session_state.get("sig_level", 0.05))
+            opt_feats, opt_adj_r2 = _forward_stepwise(
+                _df_src, available_feats, _ms, _lo, _sl,
+            )
+            for feat in available_feats:
+                st.session_state[f"feat_{feat}"] = feat in opt_feats
+            st.session_state["_opt_result"] = (opt_feats, opt_adj_r2)
+
     sel_stations, selected_features, log_offset, sig_level, model_spec, endog_features, instruments, buffer_radius = build_sidebar(
         df_all, radii_list
     )
@@ -764,23 +798,7 @@ def main() -> None:
 
     st.title("🚉 Bangkok Ridership Elasticity Dashboard")
 
-    # ── Optimize variables (forward stepwise) ─────────────────────────────
-    if st.session_state.pop("_run_optimize", False):
-        df_opt = df_all[df_all["display_name"].isin(sel_stations)].copy()
-        if not df_opt.empty:
-            available_feats = [
-                c for c in df_opt.select_dtypes(include="number").columns
-                if c not in NON_FEATURE_COLS
-            ]
-            with st.spinner("Running forward stepwise selection..."):
-                opt_feats, opt_adj_r2 = _forward_stepwise(
-                    df_opt, available_feats, model_spec, log_offset, sig_level,
-                )
-            for feat in available_feats:
-                st.session_state[f"feat_{feat}"] = feat in opt_feats
-            st.session_state["_opt_result"] = (opt_feats, opt_adj_r2)
-            st.rerun()
-
+    # Show optimization result banner
     opt_result = st.session_state.pop("_opt_result", None)
     if opt_result:
         opt_feats, opt_adj_r2 = opt_result
