@@ -27,7 +27,8 @@ DATA_PATH = "Output/combined_station_summary_expanded_rev14.csv"
 RADII_PATH = "Output/features_by_radius.csv"
 
 NON_FEATURE_COLS = {"entry", "source", "line_code", "station_name", "station", "display_name",
-                    "line_color", "station_type", "station_typology", "radius_m"}
+                    "line_color", "station_type", "station_typology", "radius_m",
+                    "n_zones_in_buffer"}
 
 # Mapping from line_code prefix → (line colour, system type)
 _LINE_PREFIX_MAP: dict[str, tuple[str, str]] = {
@@ -110,11 +111,19 @@ def get_numeric_columns(df: pd.DataFrame) -> list[str]:
 
 def _forward_stepwise(df: pd.DataFrame, candidates: list[str],
                       model_spec: str, log_offset: float, sig_level: float,
-                      max_features: int = 15) -> tuple[list[str], float]:
-    """Forward stepwise selection maximising Adj R².
-    Returns (best_features, best_adj_r2)."""
+                      mode: str = "best_r2",
+                      max_features: int = 15) -> tuple[list[str], float, int]:
+    """Forward stepwise feature selection.
+
+    mode="best_r2"    : maximise Adj R²
+    mode="max_signif" : maximise number of significant variables (p < α),
+                        ties broken by Adj R²
+
+    Returns (best_features, best_adj_r2, n_significant).
+    """
     selected: list[str] = []
     best_adj_r2 = -np.inf
+    best_n_sig = 0
 
     for _ in range(min(max_features, len(candidates))):
         improved = False
@@ -124,17 +133,29 @@ def _forward_stepwise(df: pd.DataFrame, candidates: list[str],
                 continue
             trial = selected + [feat]
             try:
-                mr, _ = run_model(df, trial, [], {}, log_offset, sig_level, model_spec)
-                if mr.rsquared_adj > best_adj_r2:
-                    best_adj_r2 = mr.rsquared_adj
-                    best_feat = feat
-                    improved = True
+                mr, cdf = run_model(df, trial, [], {}, log_offset, sig_level, model_spec)
             except Exception:
                 continue
+            n_sig = int(cdf[(cdf["variable"] != "const") & cdf["significant"]].shape[0])
+            adj_r2 = mr.rsquared_adj
+
+            if mode == "best_r2":
+                if adj_r2 > best_adj_r2:
+                    best_adj_r2 = adj_r2
+                    best_n_sig = n_sig
+                    best_feat = feat
+                    improved = True
+            else:  # max_signif
+                if (n_sig > best_n_sig) or (n_sig == best_n_sig and adj_r2 > best_adj_r2):
+                    best_n_sig = n_sig
+                    best_adj_r2 = adj_r2
+                    best_feat = feat
+                    improved = True
+
         if not improved or best_feat is None:
             break
         selected.append(best_feat)
-    return selected, best_adj_r2
+    return selected, best_adj_r2, best_n_sig
 
 
 def build_sidebar(df: pd.DataFrame, radii_list: list[int] | None = None) -> tuple:
@@ -219,9 +240,14 @@ def build_sidebar(df: pd.DataFrame, radii_list: list[int] | None = None) -> tupl
         if st.sidebar.checkbox(feat, value=(feat in DEFAULT_FEATURES), key=f"feat_{feat}")
     ]
 
+    opt_mode = st.sidebar.radio(
+        "Optimization goal",
+        options=["Best R²", "Most significant vars"],
+        index=0, horizontal=True, key="opt_mode",
+    )
     st.sidebar.button(
         "🎯 Optimize Variables", key="btn_optimize",
-        help="Find the feature combination that maximises Adj R² (forward stepwise)",
+        help="Forward stepwise: find the best feature combination",
         on_click=lambda: st.session_state.update({"_run_optimize": True}),
     )
 
@@ -783,12 +809,13 @@ def main() -> None:
             _ms = st.session_state.get("model_spec", "log-log")
             _lo = float(st.session_state.get("log_offset", 1.0))
             _sl = float(st.session_state.get("sig_level", 0.05))
-            opt_feats, opt_adj_r2 = _forward_stepwise(
-                _df_src, available_feats, _ms, _lo, _sl,
+            _om = "max_signif" if st.session_state.get("opt_mode") == "Most significant vars" else "best_r2"
+            opt_feats, opt_adj_r2, opt_n_sig = _forward_stepwise(
+                _df_src, available_feats, _ms, _lo, _sl, mode=_om,
             )
             for feat in available_feats:
                 st.session_state[f"feat_{feat}"] = feat in opt_feats
-            st.session_state["_opt_result"] = (opt_feats, opt_adj_r2)
+            st.session_state["_opt_result"] = (opt_feats, opt_adj_r2, opt_n_sig, _om)
 
     sel_stations, selected_features, log_offset, sig_level, model_spec, endog_features, instruments, buffer_radius = build_sidebar(
         df_all, radii_list
@@ -803,10 +830,12 @@ def main() -> None:
     # Show optimization result banner
     opt_result = st.session_state.pop("_opt_result", None)
     if opt_result:
-        opt_feats, opt_adj_r2 = opt_result
+        opt_feats, opt_adj_r2, opt_n_sig, opt_mode_used = opt_result
+        mode_label = "Best R²" if opt_mode_used == "best_r2" else "Most significant vars"
         st.success(
-            f"**Optimized:** {len(opt_feats)} variables selected · "
+            f"**Optimized ({mode_label}):** {len(opt_feats)} variables selected · "
             f"Adj R² = {opt_adj_r2:.4f} · "
+            f"{opt_n_sig} significant (p < α) · "
             f"Features: {', '.join(opt_feats)}"
         )
 
