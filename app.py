@@ -109,18 +109,96 @@ def get_numeric_columns(df: pd.DataFrame) -> list[str]:
     ]
 
 
+from statsmodels.stats.outliers_influence import variance_inflation_factor
+
+# Expected coefficient signs for "correct signs" mode.
+# +1 = positive expected, -1 = negative expected, None = no constraint.
+def _expected_sign(feat: str) -> int | None:
+    f = feat.lower()
+    # Distance → negative (farther = less ridership)
+    if f.endswith("_min_dist") or f.endswith("_mean_dist"):
+        return -1
+    # Count → positive (more feeders/POIs = more ridership)
+    if f.endswith("_count"):
+        return 1
+    # Sidewalk quality pct: good → positive, bad → negative
+    if f.endswith("_pct_1"):
+        return 1
+    if f.endswith("_pct_neg1"):
+        return -1
+    # Sidewalk quality length: good → positive, bad → negative
+    if "length_surface_1" in f or "length_shade_1" in f or "length_obstacle_1" in f:
+        return 1
+    if "length_surface_neg1" in f or "length_shade_neg1" in f or "length_obstacle_neg1" in f:
+        return -1
+    # General walkability → positive
+    if f in ("sidewalk_length", "sidewalk_length_1", "sidewalk_length_2",
+             "sw_total_length", "sw_width_mean",
+             "road_length_gt4m", "road_length_gt4m_atleast1sw",
+             "road_width_mean", "road_width_min", "road_width_max",
+             "n_segments"):
+        return 1
+    # Socio-economic → positive
+    if any(f.startswith(p) for p in ("pop", "prim", "sec", "ter", "stu", "tour", "comar", "tpl")):
+        return 1
+    return None
+
+
+def _compute_vif(df: pd.DataFrame, features: list[str],
+                 log_offset: float, model_spec: str) -> float:
+    """Return the max VIF across features. Returns inf on failure."""
+    try:
+        if model_spec == "linear":
+            X = df[features].copy()
+        else:
+            X = df[features].apply(lambda s: np.log(s + log_offset))
+        X = X.dropna()
+        if X.shape[0] < X.shape[1] + 1:
+            return float("inf")
+        vifs = [variance_inflation_factor(X.values, i) for i in range(X.shape[1])]
+        return max(vifs)
+    except Exception:
+        return float("inf")
+
+
 def _forward_stepwise(df: pd.DataFrame, candidates: list[str],
                       model_spec: str, log_offset: float, sig_level: float,
                       mode: str = "best_r2",
                       max_features: int = 15) -> tuple[list[str], float, int]:
     """Forward stepwise feature selection.
 
-    mode="best_r2"    : maximise Adj R²
-    mode="max_signif" : maximise number of significant variables (p < α),
-                        ties broken by Adj R²
+    Modes:
+      best_r2       — maximise Adj R²
+      max_signif    — maximise number of significant variables, ties → Adj R²
+      all_signif    — largest subset where ALL variables are significant (p < α)
+      no_vif        — maximise Adj R² with VIF < 10 constraint
+      correct_signs — maximise Adj R² with correct coefficient sign constraint
+      parsimonious  — fewest variables reaching ≥ 95% of best achievable Adj R²
 
     Returns (best_features, best_adj_r2, n_significant).
     """
+    # For parsimonious mode: first find the ceiling Adj R²
+    if mode == "parsimonious":
+        ceiling_feats, ceiling_r2, _ = _forward_stepwise(
+            df, candidates, model_spec, log_offset, sig_level, mode="best_r2",
+            max_features=max_features,
+        )
+        target_r2 = ceiling_r2 * 0.95
+        # Now find smallest subset that meets the target
+        # Try sizes 1, 2, 3, ... using forward stepwise with early stop
+        best_parsi = None
+        for size_limit in range(1, len(ceiling_feats) + 1):
+            sel, adj_r2, n_sig = _forward_stepwise(
+                df, candidates, model_spec, log_offset, sig_level,
+                mode="best_r2", max_features=size_limit,
+            )
+            if adj_r2 >= target_r2:
+                best_parsi = (sel, adj_r2, n_sig)
+                break
+        if best_parsi:
+            return best_parsi
+        return ceiling_feats, ceiling_r2, len(ceiling_feats)
+
     selected: list[str] = []
     best_adj_r2 = -np.inf
     best_n_sig = 0
@@ -136,19 +214,57 @@ def _forward_stepwise(df: pd.DataFrame, candidates: list[str],
                 mr, cdf = run_model(df, trial, [], {}, log_offset, sig_level, model_spec)
             except Exception:
                 continue
-            n_sig = int(cdf[(cdf["variable"] != "const") & cdf["significant"]].shape[0])
+            non_const = cdf[cdf["variable"] != "const"]
+            n_sig = int(non_const["significant"].sum())
             adj_r2 = mr.rsquared_adj
 
-            if mode == "best_r2":
+            # ── Mode-specific acceptance logic ────────────────────────
+            if mode == "all_signif":
+                if n_sig < len(trial):
+                    continue  # not all significant → skip
                 if adj_r2 > best_adj_r2:
                     best_adj_r2 = adj_r2
                     best_n_sig = n_sig
                     best_feat = feat
                     improved = True
-            else:  # max_signif
+
+            elif mode == "no_vif":
+                max_vif = _compute_vif(df, trial, log_offset, model_spec)
+                if max_vif > 10:
+                    continue  # VIF too high → skip
+                if adj_r2 > best_adj_r2:
+                    best_adj_r2 = adj_r2
+                    best_n_sig = n_sig
+                    best_feat = feat
+                    improved = True
+
+            elif mode == "correct_signs":
+                sign_ok = True
+                for _, row in non_const.iterrows():
+                    raw_feat = row["variable"].removeprefix("log_")
+                    expected = _expected_sign(raw_feat)
+                    if expected is not None and np.sign(row["coef"]) != expected:
+                        sign_ok = False
+                        break
+                if not sign_ok:
+                    continue
+                if adj_r2 > best_adj_r2:
+                    best_adj_r2 = adj_r2
+                    best_n_sig = n_sig
+                    best_feat = feat
+                    improved = True
+
+            elif mode == "max_signif":
                 if (n_sig > best_n_sig) or (n_sig == best_n_sig and adj_r2 > best_adj_r2):
                     best_n_sig = n_sig
                     best_adj_r2 = adj_r2
+                    best_feat = feat
+                    improved = True
+
+            else:  # best_r2
+                if adj_r2 > best_adj_r2:
+                    best_adj_r2 = adj_r2
+                    best_n_sig = n_sig
                     best_feat = feat
                     improved = True
 
@@ -240,10 +356,17 @@ def build_sidebar(df: pd.DataFrame, radii_list: list[int] | None = None) -> tupl
         if st.sidebar.checkbox(feat, value=(feat in DEFAULT_FEATURES), key=f"feat_{feat}")
     ]
 
-    opt_mode = st.sidebar.radio(
+    opt_mode = st.sidebar.selectbox(
         "Optimization goal",
-        options=["Best R²", "Most significant vars"],
-        index=0, horizontal=True, key="opt_mode",
+        options=[
+            "Best R²",
+            "Most significant vars",
+            "All vars significant",
+            "No multicollinearity (VIF<10)",
+            "Correct signs only",
+            "Parsimonious (fewest vars)",
+        ],
+        index=0, key="opt_mode",
     )
     st.sidebar.button(
         "🎯 Optimize Variables", key="btn_optimize",
@@ -809,7 +932,16 @@ def main() -> None:
             _ms = st.session_state.get("model_spec", "log-log")
             _lo = float(st.session_state.get("log_offset", 1.0))
             _sl = float(st.session_state.get("sig_level", 0.05))
-            _om = "max_signif" if st.session_state.get("opt_mode") == "Most significant vars" else "best_r2"
+            _opt_label = st.session_state.get("opt_mode", "Best R²")
+            _mode_map = {
+                "Best R²": "best_r2",
+                "Most significant vars": "max_signif",
+                "All vars significant": "all_signif",
+                "No multicollinearity (VIF<10)": "no_vif",
+                "Correct signs only": "correct_signs",
+                "Parsimonious (fewest vars)": "parsimonious",
+            }
+            _om = _mode_map.get(_opt_label, "best_r2")
             opt_feats, opt_adj_r2, opt_n_sig = _forward_stepwise(
                 _df_src, available_feats, _ms, _lo, _sl, mode=_om,
             )
@@ -831,7 +963,15 @@ def main() -> None:
     opt_result = st.session_state.pop("_opt_result", None)
     if opt_result:
         opt_feats, opt_adj_r2, opt_n_sig, opt_mode_used = opt_result
-        mode_label = "Best R²" if opt_mode_used == "best_r2" else "Most significant vars"
+        _mode_labels = {
+            "best_r2": "Best R²",
+            "max_signif": "Most significant vars",
+            "all_signif": "All vars significant",
+            "no_vif": "No multicollinearity",
+            "correct_signs": "Correct signs",
+            "parsimonious": "Parsimonious",
+        }
+        mode_label = _mode_labels.get(opt_mode_used, opt_mode_used)
         st.success(
             f"**Optimized ({mode_label}):** {len(opt_feats)} variables selected · "
             f"Adj R² = {opt_adj_r2:.4f} · "
