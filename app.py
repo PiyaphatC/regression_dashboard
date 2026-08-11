@@ -23,7 +23,7 @@ from model import (
     predict_ridership,
 )
 
-DATA_PATH = "Output/combined_station_summary_expanded_rev14.csv"
+DATA_PATH = "Output/combined_station_summary_expanded_rev16.csv"
 RADII_PATH = "Output/features_by_radius.csv"
 
 NON_FEATURE_COLS = {"entry", "source", "line_code", "station_name", "station", "display_name",
@@ -895,7 +895,7 @@ def render_buffer_sensitivity(
 def main() -> None:
     st.set_page_config(page_title="Bangkok Ridership Elasticity", layout="wide", page_icon="🚉")
 
-    # Load multi-radius data if available, else fall back to single-radius rev14
+    # Load multi-radius data if available, else fall back to single-radius rev16
     has_radii = os.path.exists(RADII_PATH)
     if has_radii:
         df_radii = load_radii_data()

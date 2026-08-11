@@ -4,8 +4,8 @@
 Log-log OLS regression of Bangkok rail station ridership (daily entries) against sidewalk quality and last-mile feeder mode variables. Outputs are elasticity coefficients. Dashboard is built with Streamlit (`app.py`).
 
 ## Data
-- **Main dataset:** `Output/combined_station_summary_expanded_rev14.csv`
-  - 193 stations, 129 columns
+- **Main dataset:** `Output/combined_station_summary_expanded_rev16.csv`
+  - 193 stations, 87 columns
   - Target: `entry` (average daily entries)
   - `station_typology`: Local Station, Interchange Station, Major Hub, Destination Gateway, Intermodal Transportation Hub
 - **Ridership source:** `Output/ridership_raw.xlsx`
