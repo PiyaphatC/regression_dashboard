@@ -740,6 +740,267 @@ def render_whatif(df: pd.DataFrame, coef_df: pd.DataFrame,
     st.dataframe(pd.DataFrame(impact_rows), use_container_width=True, hide_index=True)
 
 
+# ── Walkability variable helpers for policy tabs ─────────────────────────
+
+# Mapping: dimension → list of possible neg1 variable names
+_WALK_NEG1_VARS: dict[str, list[str]] = {
+    "Surface":  ["surface_pct_neg1", "sidewalk_length_surface_neg1"],
+    "Shade":    ["shade_pct_neg1", "sidewalk_length_shade_neg1"],
+    "Obstacle": ["obs_pct_neg1", "sidewalk_length_obstacle_neg1"],
+}
+
+# Corresponding _0 variables (receive the shifted amount when neg1 → 0)
+_WALK_0_VARS: dict[str, list[str]] = {
+    "Surface":  ["surface_pct_0", "sidewalk_length_surface_0"],
+    "Shade":    ["shade_pct_0", "sidewalk_length_shade_0"],
+    "Obstacle": ["obs_pct_0", "sidewalk_length_obstacle_0"],
+}
+
+
+def _find_walk_vars(selected_features: list[str]) -> dict[str, list[str]]:
+    """Return {dimension: [matched neg1 features]} for selected walkability vars."""
+    found: dict[str, list[str]] = {}
+    for dim, candidates in _WALK_NEG1_VARS.items():
+        matched = [v for v in candidates if v in selected_features]
+        if matched:
+            found[dim] = matched
+    return found
+
+
+def _find_walk0_vars(selected_features: list[str]) -> dict[str, list[str]]:
+    """Return {dimension: [matched _0 features]} for selected walkability vars."""
+    found: dict[str, list[str]] = {}
+    for dim, candidates in _WALK_0_VARS.items():
+        matched = [v for v in candidates if v in selected_features]
+        if matched:
+            found[dim] = matched
+    return found
+
+
+def _build_scenario_vals(
+    base_vals: dict[str, float],
+    neg1_vars: list[str],
+    zero_vars: list[str],
+    df_row: pd.Series,
+) -> dict[str, float]:
+    """Build a copy of base_vals with neg1 vars set to 0 and _0 vars increased."""
+    new = dict(base_vals)
+    for v in neg1_vars:
+        old_amount = new.get(v, 0.0)
+        new[v] = 0.0
+        # If the corresponding _0 var is in the model, shift the amount there
+        for z in zero_vars:
+            if z in new:
+                new[z] = new[z] + old_amount
+            elif z in df_row.index:
+                # _0 var exists in data but not in model — no effect on prediction
+                pass
+    return new
+
+
+def _policy_sort_widget(key_suffix: str) -> str:
+    """Render a sort-by selectbox and return the chosen column."""
+    return st.selectbox(
+        "Sort / group by",
+        ["Line Color", "Station Typology"],
+        key=f"policy_sort_{key_suffix}",
+    )
+
+
+def _policy_download(result_df: pd.DataFrame, key_suffix: str) -> None:
+    """Render a CSV download button."""
+    csv = result_df.to_csv(index=False).encode("utf-8-sig")
+    st.download_button(
+        "Download CSV",
+        data=csv,
+        file_name=f"policy_recommendation_{key_suffix}.csv",
+        mime="text/csv",
+        key=f"policy_dl_{key_suffix}",
+    )
+
+
+# ── Tab 4: Policy Recommendation (Exact / What-if) ──────────────────────
+
+def render_policy_exact(
+    df: pd.DataFrame, coef_df: pd.DataFrame,
+    selected_features: list[str], log_offset: float,
+    model_spec: str = "log-log",
+) -> None:
+    st.subheader("Policy Recommendation — Exact Prediction")
+    st.caption(
+        "Scenario: upgrade all poor-quality (−1) sidewalk to neutral (0). "
+        "Each column shows the predicted ridership change using the full model equation."
+    )
+
+    walk_neg1 = _find_walk_vars(selected_features)
+    walk_zero = _find_walk0_vars(selected_features)
+
+    if not walk_neg1:
+        st.warning(
+            "No walkability neg1 variables are selected in the model. "
+            "Please add surface/shade/obstacle neg1 variables to see policy impacts."
+        )
+        return
+
+    sort_col_label = _policy_sort_widget("exact")
+    sort_col = "line_color" if sort_col_label == "Line Color" else "station_typology"
+
+    rows = []
+    for _, station_row in df.iterrows():
+        base_vals = {f: float(station_row[f]) for f in selected_features if f in station_row.index}
+        base_pred = predict_ridership(coef_df, base_vals, log_offset, model_spec)
+
+        record: dict = {
+            "Station": station_row["display_name"],
+            "Line Color": station_row.get("line_color", ""),
+            "Station Typology": station_row.get("station_typology", ""),
+            "Base Ridership": round(base_pred),
+        }
+
+        # Individual dimension scenarios
+        indiv_pcts = []
+        for dim in ["Surface", "Shade", "Obstacle"]:
+            neg1_list = walk_neg1.get(dim, [])
+            zero_list = walk_zero.get(dim, [])
+            if neg1_list:
+                scenario = _build_scenario_vals(base_vals, neg1_list, zero_list, station_row)
+                new_pred = predict_ridership(coef_df, scenario, log_offset, model_spec)
+                chg = new_pred - base_pred
+                pct = chg / base_pred * 100 if base_pred > 0 else 0.0
+                record[f"Δ {dim} (riders)"] = round(chg)
+                record[f"Δ {dim} (%)"] = round(pct, 2)
+                indiv_pcts.append(pct)
+            else:
+                record[f"Δ {dim} (riders)"] = "—"
+                record[f"Δ {dim} (%)"] = "—"
+
+        # Combined scenario: all neg1 → 0 simultaneously
+        all_neg1 = [v for vlist in walk_neg1.values() for v in vlist]
+        all_zero = [v for vlist in walk_zero.values() for v in vlist]
+        combined = _build_scenario_vals(base_vals, all_neg1, all_zero, station_row)
+        combined_pred = predict_ridership(coef_df, combined, log_offset, model_spec)
+        combined_chg = combined_pred - base_pred
+        combined_pct = combined_chg / base_pred * 100 if base_pred > 0 else 0.0
+        record["Δ Combined (riders)"] = round(combined_chg)
+        record["Δ Combined (%)"] = round(combined_pct, 2)
+
+        # Sum of individual %s for comparison
+        sum_indiv = sum(indiv_pcts)
+        record["Sum of Individual (%)"] = round(sum_indiv, 2)
+
+        rows.append(record)
+
+    result_df = pd.DataFrame(rows)
+    result_df = result_df.sort_values(sort_col_label)
+
+    st.dataframe(result_df, use_container_width=True, hide_index=True, height=500)
+
+    st.info(
+        "**Note:** The 'Combined' column uses the full model with all walkability variables "
+        "changed simultaneously. Due to the non-linear (log-log) model, "
+        "Combined ≠ Sum of Individual columns. The 'Sum of Individual' column is shown "
+        "for comparison."
+    )
+
+    _policy_download(result_df, "exact")
+
+
+# ── Tab 5: Policy Recommendation (Elasticity Approximation) ─────────────
+
+def render_policy_approx(
+    df: pd.DataFrame, coef_df: pd.DataFrame,
+    selected_features: list[str], log_offset: float,
+    model_spec: str = "log-log",
+) -> None:
+    st.subheader("Policy Recommendation — Elasticity Approximation")
+    st.caption(
+        "Scenario: upgrade all poor-quality (−1) sidewalk to neutral (0). "
+        "Each column shows the approximate ridership change using: "
+        "Δ% ridership ≈ elasticity × Δ% feature."
+    )
+
+    walk_neg1 = _find_walk_vars(selected_features)
+
+    if not walk_neg1:
+        st.warning(
+            "No walkability neg1 variables are selected in the model. "
+            "Please add surface/shade/obstacle neg1 variables to see policy impacts."
+        )
+        return
+
+    sort_col_label = _policy_sort_widget("approx")
+    sort_col = "line_color" if sort_col_label == "Line Color" else "station_typology"
+
+    rows = []
+    for _, station_row in df.iterrows():
+        base_vals = {f: float(station_row[f]) for f in selected_features if f in station_row.index}
+        base_pred = predict_ridership(coef_df, base_vals, log_offset, model_spec)
+
+        record: dict = {
+            "Station": station_row["display_name"],
+            "Line Color": station_row.get("line_color", ""),
+            "Station Typology": station_row.get("station_typology", ""),
+            "Base Ridership": round(base_pred),
+        }
+
+        indiv_pcts = []
+        for dim in ["Surface", "Shade", "Obstacle"]:
+            neg1_list = walk_neg1.get(dim, [])
+            if neg1_list:
+                dim_pct_total = 0.0
+                for feat in neg1_list:
+                    base_val = base_vals.get(feat, 0.0)
+                    new_val = 0.0  # neg1 → 0 means this variable becomes 0
+                    # % change in x
+                    pct_x = (new_val - base_val) / (base_val + 1e-9) * 100
+
+                    # Get elasticity
+                    var_name = feat if model_spec == "linear" else f"log_{feat}"
+                    coef_row = coef_df[coef_df["variable"] == var_name]
+                    if coef_row.empty:
+                        continue
+                    coef_val = float(coef_row["coef"].values[0])
+
+                    if model_spec == "log-log":
+                        elasticity = coef_val
+                    elif model_spec == "semi-log":
+                        elasticity = coef_val / (base_pred + 1e-9)
+                    else:
+                        elasticity = coef_val * base_val / (base_pred + 1e-9)
+
+                    dim_pct_total += elasticity_impact(elasticity, pct_x)
+
+                approx_riders = base_pred * dim_pct_total / 100
+                record[f"Δ {dim} (riders)"] = round(approx_riders)
+                record[f"Δ {dim} (%)"] = round(dim_pct_total, 2)
+                indiv_pcts.append(dim_pct_total)
+            else:
+                record[f"Δ {dim} (riders)"] = "—"
+                record[f"Δ {dim} (%)"] = "—"
+
+        # Combined = sum of individual (linear approximation is additive)
+        sum_pct = sum(indiv_pcts)
+        approx_combined_riders = base_pred * sum_pct / 100
+        record["Δ Combined (riders)"] = round(approx_combined_riders)
+        record["Δ Combined (%)"] = round(sum_pct, 2)
+        record["Sum of Individual (%)"] = round(sum_pct, 2)
+
+        rows.append(record)
+
+    result_df = pd.DataFrame(rows)
+    result_df = result_df.sort_values(sort_col_label)
+
+    st.dataframe(result_df, use_container_width=True, hide_index=True, height=500)
+
+    st.info(
+        "**Note:** The elasticity approximation is linear, so Combined = Sum of Individual "
+        "by definition. This approximation overestimates for large changes. "
+        "Compare with the 'Policy (Exact)' tab to see the difference."
+    )
+
+    _policy_download(result_df, "approx")
+
+
 def render_buffer_sensitivity(
     df_radii: pd.DataFrame,
     selected_features: list[str],
@@ -1010,7 +1271,8 @@ def main() -> None:
         unsafe_allow_html=True,
     )
 
-    tabs = ["Model Results", "Station Explorer", "What-if Simulator"]
+    tabs = ["Model Results", "Station Explorer", "What-if Simulator",
+            "Policy (Exact)", "Policy (Elasticity Approx.)"]
     if has_radii:
         tabs.append("Buffer Sensitivity")
     tab_objs = st.tabs(tabs)
@@ -1021,8 +1283,12 @@ def main() -> None:
         render_station_explorer(df, coef_df, selected_features, log_offset, model_spec)
     with tab_objs[2]:
         render_whatif(df, coef_df, selected_features, log_offset, model_spec)
-    if has_radii and len(tab_objs) > 3:
-        with tab_objs[3]:
+    with tab_objs[3]:
+        render_policy_exact(df, coef_df, selected_features, log_offset, model_spec)
+    with tab_objs[4]:
+        render_policy_approx(df, coef_df, selected_features, log_offset, model_spec)
+    if has_radii and len(tab_objs) > 5:
+        with tab_objs[5]:
             render_buffer_sensitivity(
                 df_radii, selected_features, sel_stations,
                 log_offset, sig_level, model_spec,
