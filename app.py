@@ -57,18 +57,28 @@ def _classify_line(code: str) -> tuple[str, str]:
     return ("Other", "Other")
 
 DEFAULT_FEATURES = [
-    # Sidewalk quality — surface (length with poor rating)
-    "sidewalk_length_surface_neg1",
-    # Sidewalk quality — shade (length with poor rating)
-    "sidewalk_length_shade_neg1",
-    # Sidewalk quality — obstacle-free (length with poor rating)
-    "sidewalk_length_obstacle_neg1",
-    # Last-mile feeder modes
+    # Last-mile feeder counts
+    "bus_stop_count",
     "win_count",
-    "bike_share_count",
     "taxi_count",
-    # Bus connectivity
+    "park_ride_car_count",
+    "bike_parking_count",
+    "bike_share_count",
+    # Last-mile feeder distances
+    "bike_parking_mean_dist",
+    "bike_share_mean_dist",
     "bus_stop_mean_dist",
+    "taxi_mean_dist",
+    "win_mean_dist",
+    # Sidewalk
+    "sw_total_length",
+    "sidewalk_length_surface_neg1",
+    "sidewalk_length_shade_neg1",
+    "sidewalk_length_obstacle_neg1",
+    # Socio-economic
+    "POP25",
+    "PRIM25",
+    "STU25",
 ]
 
 
