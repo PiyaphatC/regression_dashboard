@@ -1020,8 +1020,8 @@ def render_policy_plot(
 ) -> None:
     st.subheader("Policy Comparison — Exact vs Elasticity")
     st.caption(
-        "Select a station to compare the predicted ridership change from the Exact "
-        "and Elasticity methods across the four upgrade scenarios."
+        "All stations on the x-axis, sorted by base ridership. "
+        "Select a scenario to see the predicted ridership change from both methods."
     )
 
     walk_neg1 = _find_walk_vars(selected_features)
@@ -1034,101 +1034,108 @@ def render_policy_plot(
         )
         return
 
-    # Station selector
-    station_names = sorted(df["display_name"].tolist())
-    selected_station = st.selectbox(
-        "Select station", station_names, key="policy_plot_station",
-    )
-    station_row = df[df["display_name"] == selected_station].iloc[0]
+    dims = ["Surface", "Shade", "Obstacle"]
+    available_scenarios = [f"Δ {d}" for d in dims if d in walk_neg1] + ["Δ Combined"]
 
-    # Choose display unit
-    unit = st.radio(
-        "Display unit", ["% change", "Rider change"],
-        horizontal=True, key="policy_plot_unit",
-    )
+    # Controls
+    c1, c2 = st.columns(2)
+    with c1:
+        scenario = st.selectbox(
+            "Scenario", available_scenarios, key="policy_plot_scenario",
+        )
+    with c2:
+        unit = st.radio(
+            "Display unit", ["% change", "Rider change"],
+            horizontal=True, key="policy_plot_unit",
+        )
     use_pct = unit == "% change"
 
-    # ── Compute exact & elasticity for the selected station ──────────
-    dims = ["Surface", "Shade", "Obstacle"]
-    base_vals = {f: float(station_row[f]) for f in selected_features if f in station_row.index}
-    base_pred = predict_ridership(coef_df, base_vals, log_offset, model_spec)
+    # ── Compute exact & elasticity for all stations ───────────────────
+    records: list[dict] = []
 
-    exact_vals: dict[str, dict] = {}
-    approx_vals: dict[str, dict] = {}
+    for _, row in df.iterrows():
+        base_vals = {f: float(row[f]) for f in selected_features if f in row.index}
+        base_pred = predict_ridership(coef_df, base_vals, log_offset, model_spec)
+        station_label = row["display_name"]
 
-    for dim in dims:
-        neg1_list = walk_neg1.get(dim, [])
-        zero_list = walk_zero.get(dim, [])
-        scenario_key = f"Δ {dim}"
-        if not neg1_list:
-            exact_vals[scenario_key] = {"riders": 0.0, "pct": 0.0}
-            approx_vals[scenario_key] = {"riders": 0.0, "pct": 0.0}
-            continue
+        # ── Exact ──
+        if scenario == "Δ Combined":
+            all_neg1 = [v for vlist in walk_neg1.values() for v in vlist]
+            all_zero = [v for vlist in walk_zero.values() for v in vlist]
+            sc_vals = _build_scenario_vals(base_vals, all_neg1, all_zero, row)
+        else:
+            dim = scenario.replace("Δ ", "")
+            neg1_list = walk_neg1.get(dim, [])
+            zero_list = walk_zero.get(dim, [])
+            sc_vals = _build_scenario_vals(base_vals, neg1_list, zero_list, row)
 
-        # Exact
-        scenario = _build_scenario_vals(base_vals, neg1_list, zero_list, station_row)
-        new_pred = predict_ridership(coef_df, scenario, log_offset, model_spec)
-        chg = new_pred - base_pred
-        pct = chg / base_pred * 100 if base_pred > 0 else 0.0
-        exact_vals[scenario_key] = {"riders": chg, "pct": pct}
+        new_pred = predict_ridership(coef_df, sc_vals, log_offset, model_spec)
+        exact_chg = new_pred - base_pred
+        exact_pct = exact_chg / base_pred * 100 if base_pred > 0 else 0.0
 
-        # Elasticity
-        dim_pct_total = 0.0
-        for feat in neg1_list:
-            base_val = base_vals.get(feat, 0.0)
-            pct_x = (0.0 - base_val) / (base_val + 1e-9) * 100
-            var_name = feat if model_spec == "linear" else f"log_{feat}"
-            coef_row_match = coef_df[coef_df["variable"] == var_name]
-            if coef_row_match.empty:
-                continue
-            coef_val = float(coef_row_match["coef"].values[0])
-            if model_spec == "log-log":
-                elasticity = coef_val
-            elif model_spec == "semi-log":
-                elasticity = coef_val / (base_pred + 1e-9)
-            else:
-                elasticity = coef_val * base_val / (base_pred + 1e-9)
-            dim_pct_total += elasticity_impact(elasticity, pct_x)
-        approx_riders = base_pred * dim_pct_total / 100
-        approx_vals[scenario_key] = {"riders": approx_riders, "pct": dim_pct_total}
+        # ── Elasticity ──
+        if scenario == "Δ Combined":
+            target_dims = [d for d in dims if d in walk_neg1]
+        else:
+            target_dims = [scenario.replace("Δ ", "")]
 
-    # Combined
-    all_neg1 = [v for vlist in walk_neg1.values() for v in vlist]
-    all_zero = [v for vlist in walk_zero.values() for v in vlist]
-    combined_sc = _build_scenario_vals(base_vals, all_neg1, all_zero, station_row)
-    combined_pred = predict_ridership(coef_df, combined_sc, log_offset, model_spec)
-    c_chg = combined_pred - base_pred
-    c_pct = c_chg / base_pred * 100 if base_pred > 0 else 0.0
-    exact_vals["Δ Combined"] = {"riders": c_chg, "pct": c_pct}
+        approx_pct_total = 0.0
+        for td in target_dims:
+            for feat in walk_neg1.get(td, []):
+                base_val = base_vals.get(feat, 0.0)
+                pct_x = (0.0 - base_val) / (base_val + 1e-9) * 100
+                var_name = feat if model_spec == "linear" else f"log_{feat}"
+                coef_row_match = coef_df[coef_df["variable"] == var_name]
+                if coef_row_match.empty:
+                    continue
+                coef_val = float(coef_row_match["coef"].values[0])
+                if model_spec == "log-log":
+                    elasticity = coef_val
+                elif model_spec == "semi-log":
+                    elasticity = coef_val / (base_pred + 1e-9)
+                else:
+                    elasticity = coef_val * base_val / (base_pred + 1e-9)
+                approx_pct_total += elasticity_impact(elasticity, pct_x)
+        approx_chg = base_pred * approx_pct_total / 100
 
-    sum_approx_pct = sum(v["pct"] for v in approx_vals.values())
-    sum_approx_riders = base_pred * sum_approx_pct / 100
-    approx_vals["Δ Combined"] = {"riders": sum_approx_riders, "pct": sum_approx_pct}
+        records.append({
+            "Station": station_label,
+            "Base Ridership": base_pred,
+            "Exact (%)": exact_pct,
+            "Elasticity (%)": approx_pct_total,
+            "Exact (riders)": exact_chg,
+            "Elasticity (riders)": approx_chg,
+        })
 
-    # ── Build grouped bar chart ───────────────────────────────────────
-    scenario_order = [f"Δ {d}" for d in dims if d in walk_neg1] + ["Δ Combined"]
-    val_key = "pct" if use_pct else "riders"
-    y_label = "Ridership change (%)" if use_pct else "Ridership change (riders)"
+    result_df = pd.DataFrame(records).sort_values("Base Ridership", ascending=False)
+    stations_sorted = result_df["Station"].tolist()
 
-    exact_y = [exact_vals[s][val_key] for s in scenario_order]
-    approx_y = [approx_vals[s][val_key] for s in scenario_order]
+    if use_pct:
+        y_exact, y_approx = result_df["Exact (%)"], result_df["Elasticity (%)"]
+        y_label = "Ridership change (%)"
+    else:
+        y_exact, y_approx = result_df["Exact (riders)"], result_df["Elasticity (riders)"]
+        y_label = "Ridership change (riders)"
 
     fig = go.Figure()
     fig.add_trace(go.Bar(
-        x=scenario_order, y=exact_y, name="Exact",
+        x=stations_sorted, y=y_exact, name="Exact",
         marker_color="#636EFA",
     ))
     fig.add_trace(go.Bar(
-        x=scenario_order, y=approx_y, name="Elasticity",
+        x=stations_sorted, y=y_approx, name="Elasticity",
         marker_color="#EF553B",
     ))
     fig.update_layout(
-        title=f"{selected_station}  (Base ridership: {round(base_pred):,})",
-        xaxis_title="Scenario",
+        title=f"{scenario} — All Stations",
+        xaxis_title="Station",
         yaxis_title=y_label,
         barmode="group",
-        height=500,
-        xaxis=dict(categoryorder="array", categoryarray=scenario_order),
+        height=600,
+        xaxis=dict(
+            categoryorder="array", categoryarray=stations_sorted,
+            tickangle=-90, tickfont=dict(size=8),
+        ),
     )
     st.plotly_chart(fig, use_container_width=True)
 
