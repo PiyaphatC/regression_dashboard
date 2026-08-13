@@ -935,81 +935,7 @@ def render_policy_exact(
     _policy_download(result_df, "exact")
 
 
-# ── Tab 5: Policy (Exact Simultaneous) ───────────────────────────────────
-
-def render_policy_exact_simultaneous(
-    df: pd.DataFrame, coef_df: pd.DataFrame,
-    selected_features: list[str], log_offset: float,
-    model_spec: str = "log-log",
-) -> None:
-    st.subheader("Policy Recommendation — Exact Simultaneous")
-    st.caption(
-        "Scenario: upgrade ALL poor-quality (−1) sidewalk dimensions to neutral (0) "
-        "at the same time. A single prediction is made with all neg1 variables set to 0 "
-        "simultaneously — no summing of individual effects."
-    )
-
-    walk_neg1 = _find_walk_vars(selected_features)
-    walk_zero = _find_walk0_vars(selected_features)
-
-    if not walk_neg1:
-        st.warning(
-            "No walkability neg1 variables are selected in the model. "
-            "Please add surface/shade/obstacle neg1 variables to see policy impacts."
-        )
-        return
-
-    sort_col_label = _policy_sort_widget("exact_simul")
-    sort_col = "line_color" if sort_col_label == "Line Color" else "station_typology"
-
-    all_neg1 = [v for vlist in walk_neg1.values() for v in vlist]
-    all_zero = [v for vlist in walk_zero.values() for v in vlist]
-
-    rows = []
-    for _, station_row in df.iterrows():
-        base_vals = {f: float(station_row[f]) for f in selected_features if f in station_row.index}
-        base_pred = predict_ridership(coef_df, base_vals, log_offset, model_spec)
-
-        # Set all neg1 → 0 simultaneously, single prediction
-        scenario = _build_scenario_vals(base_vals, all_neg1, all_zero, station_row)
-        new_pred = predict_ridership(coef_df, scenario, log_offset, model_spec)
-        chg = new_pred - base_pred
-        pct = chg / base_pred * 100 if base_pred > 0 else 0.0
-
-        # Show which dimensions actually changed
-        dims_changed = []
-        for dim in ["Surface", "Shade", "Obstacle"]:
-            for v in walk_neg1.get(dim, []):
-                if base_vals.get(v, 0.0) > 0:
-                    dims_changed.append(dim)
-                    break
-
-        rows.append({
-            "Station": station_row["display_name"],
-            "Line Color": station_row.get("line_color", ""),
-            "Station Typology": station_row.get("station_typology", ""),
-            "Dimensions Changed": ", ".join(dims_changed) if dims_changed else "None",
-            "Base Ridership": round(base_pred),
-            "New Ridership": round(new_pred),
-            "Δ Riders": round(chg),
-            "Δ %": round(pct, 2),
-        })
-
-    result_df = pd.DataFrame(rows)
-    result_df = result_df.sort_values(sort_col_label)
-
-    st.dataframe(result_df, use_container_width=True, hide_index=True, height=500)
-
-    st.info(
-        "**Note:** All neg1 variables are changed to 0 simultaneously in a single prediction. "
-        "In a log-log model, this combined effect is larger than the sum of individual effects "
-        "because the changes compound through exp()."
-    )
-
-    _policy_download(result_df, "exact_simul")
-
-
-# ── Tab 6: Policy Recommendation (Elasticity Approximation) ─────────────
+# ── Tab 5: Policy Recommendation (Elasticity Approximation) ─────────────
 
 def render_policy_approx(
     df: pd.DataFrame, coef_df: pd.DataFrame,
@@ -1494,8 +1420,7 @@ def main() -> None:
     )
 
     tabs = ["Model Results", "Station Explorer", "What-if Simulator",
-            "Policy (Exact)", "Policy (Eq. -1 to 0 at Once)",
-            "Policy (Elasticity Approx.)", "Policy Plot"]
+            "Policy (Exact)", "Policy (Elasticity Approx.)", "Policy Plot"]
     if has_radii:
         tabs.append("Buffer Sensitivity")
     tab_objs = st.tabs(tabs)
@@ -1509,13 +1434,11 @@ def main() -> None:
     with tab_objs[3]:
         render_policy_exact(df, coef_df, selected_features, log_offset, model_spec)
     with tab_objs[4]:
-        render_policy_exact_simultaneous(df, coef_df, selected_features, log_offset, model_spec)
-    with tab_objs[5]:
         render_policy_approx(df, coef_df, selected_features, log_offset, model_spec)
-    with tab_objs[6]:
+    with tab_objs[5]:
         render_policy_plot(df, coef_df, selected_features, log_offset, model_spec)
-    if has_radii and len(tab_objs) > 7:
-        with tab_objs[7]:
+    if has_radii and len(tab_objs) > 6:
+        with tab_objs[6]:
             render_buffer_sensitivity(
                 df_radii, selected_features, sel_stations,
                 log_offset, sig_level, model_spec,
