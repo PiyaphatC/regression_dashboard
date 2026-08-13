@@ -1011,6 +1011,165 @@ def render_policy_approx(
     _policy_download(result_df, "approx")
 
 
+# ── Tab 6: Policy Comparison Plot ────────────────────────────────────────
+
+def render_policy_plot(
+    df: pd.DataFrame, coef_df: pd.DataFrame,
+    selected_features: list[str], log_offset: float,
+    model_spec: str = "log-log",
+) -> None:
+    st.subheader("Policy Comparison — Exact vs Elasticity")
+    st.caption(
+        "Each dot represents a station. The x-axis groups the four upgrade scenarios "
+        "(Δ Surface, Δ Shade, Δ Obstacle, Δ Combined). "
+        "Y-axis shows the predicted change in ridership (%)."
+    )
+
+    walk_neg1 = _find_walk_vars(selected_features)
+    walk_zero = _find_walk0_vars(selected_features)
+
+    if not walk_neg1:
+        st.warning(
+            "No walkability neg1 variables are selected in the model. "
+            "Please add surface/shade/obstacle neg1 variables to see policy impacts."
+        )
+        return
+
+    # Choose display unit
+    unit = st.radio(
+        "Display unit", ["% change", "Rider change"],
+        horizontal=True, key="policy_plot_unit",
+    )
+    use_pct = unit == "% change"
+
+    # ── Compute exact & elasticity for every station ──────────────────
+    dims = ["Surface", "Shade", "Obstacle"]
+    exact_records: list[dict] = []
+    approx_records: list[dict] = []
+
+    for _, row in df.iterrows():
+        base_vals = {f: float(row[f]) for f in selected_features if f in row.index}
+        base_pred = predict_ridership(coef_df, base_vals, log_offset, model_spec)
+        station_label = row["display_name"]
+        line_color = row.get("line_color", "")
+        typology = row.get("station_typology", "")
+
+        for dim in dims:
+            neg1_list = walk_neg1.get(dim, [])
+            zero_list = walk_zero.get(dim, [])
+            if not neg1_list:
+                continue
+
+            # ── Exact ──
+            scenario = _build_scenario_vals(base_vals, neg1_list, zero_list, row)
+            new_pred = predict_ridership(coef_df, scenario, log_offset, model_spec)
+            chg = new_pred - base_pred
+            pct = chg / base_pred * 100 if base_pred > 0 else 0.0
+            exact_records.append({
+                "Station": station_label, "Line Color": line_color,
+                "Station Typology": typology,
+                "Scenario": f"Δ {dim}",
+                "Δ riders": chg, "Δ %": pct,
+            })
+
+            # ── Elasticity ──
+            dim_pct_total = 0.0
+            for feat in neg1_list:
+                base_val = base_vals.get(feat, 0.0)
+                pct_x = (0.0 - base_val) / (base_val + 1e-9) * 100
+                var_name = feat if model_spec == "linear" else f"log_{feat}"
+                coef_row = coef_df[coef_df["variable"] == var_name]
+                if coef_row.empty:
+                    continue
+                coef_val = float(coef_row["coef"].values[0])
+                if model_spec == "log-log":
+                    elasticity = coef_val
+                elif model_spec == "semi-log":
+                    elasticity = coef_val / (base_pred + 1e-9)
+                else:
+                    elasticity = coef_val * base_val / (base_pred + 1e-9)
+                dim_pct_total += elasticity_impact(elasticity, pct_x)
+            approx_riders = base_pred * dim_pct_total / 100
+            approx_records.append({
+                "Station": station_label, "Line Color": line_color,
+                "Station Typology": typology,
+                "Scenario": f"Δ {dim}",
+                "Δ riders": approx_riders, "Δ %": dim_pct_total,
+            })
+
+        # ── Combined ──
+        all_neg1 = [v for vlist in walk_neg1.values() for v in vlist]
+        all_zero = [v for vlist in walk_zero.values() for v in vlist]
+        # Exact combined
+        combined_sc = _build_scenario_vals(base_vals, all_neg1, all_zero, row)
+        combined_pred = predict_ridership(coef_df, combined_sc, log_offset, model_spec)
+        c_chg = combined_pred - base_pred
+        c_pct = c_chg / base_pred * 100 if base_pred > 0 else 0.0
+        exact_records.append({
+            "Station": station_label, "Line Color": line_color,
+            "Station Typology": typology,
+            "Scenario": "Δ Combined",
+            "Δ riders": c_chg, "Δ %": c_pct,
+        })
+        # Elasticity combined = sum of individual
+        station_approx = [r for r in approx_records if r["Station"] == station_label]
+        sum_pct = sum(r["Δ %"] for r in station_approx)
+        sum_riders = base_pred * sum_pct / 100
+        approx_records.append({
+            "Station": station_label, "Line Color": line_color,
+            "Station Typology": typology,
+            "Scenario": "Δ Combined",
+            "Δ riders": sum_riders, "Δ %": sum_pct,
+        })
+
+    df_exact = pd.DataFrame(exact_records)
+    df_approx = pd.DataFrame(approx_records)
+
+    y_col = "Δ %" if use_pct else "Δ riders"
+    y_label = "Ridership change (%)" if use_pct else "Ridership change (riders)"
+
+    # Colour by group
+    color_by = st.selectbox(
+        "Colour by", ["Line Color", "Station Typology"],
+        key="policy_plot_color",
+    )
+
+    scenario_order = [f"Δ {d}" for d in dims if d in walk_neg1] + ["Δ Combined"]
+
+    # ── Build two side-by-side charts ─────────────────────────────────
+    col1, col2 = st.columns(2)
+
+    for col, (method_df, title) in zip(
+        [col1, col2],
+        [(df_exact, "Exact Prediction"), (df_approx, "Elasticity Approximation")],
+    ):
+        with col:
+            fig = go.Figure()
+            groups = sorted(method_df[color_by].unique())
+            for grp in groups:
+                sub = method_df[method_df[color_by] == grp]
+                fig.add_trace(go.Box(
+                    x=sub["Scenario"],
+                    y=sub[y_col],
+                    name=str(grp),
+                    boxpoints="all",
+                    jitter=0.4,
+                    pointpos=0,
+                    marker=dict(size=4, opacity=0.5),
+                ))
+            fig.update_layout(
+                title=title,
+                xaxis_title="Scenario",
+                yaxis_title=y_label,
+                xaxis=dict(categoryorder="array", categoryarray=scenario_order),
+                boxmode="group",
+                height=500,
+                showlegend=True,
+                legend=dict(title=color_by),
+            )
+            st.plotly_chart(fig, use_container_width=True)
+
+
 def render_buffer_sensitivity(
     df_radii: pd.DataFrame,
     selected_features: list[str],
@@ -1282,7 +1441,7 @@ def main() -> None:
     )
 
     tabs = ["Model Results", "Station Explorer", "What-if Simulator",
-            "Policy (Exact)", "Policy (Elasticity Approx.)"]
+            "Policy (Exact)", "Policy (Elasticity Approx.)", "Policy Plot"]
     if has_radii:
         tabs.append("Buffer Sensitivity")
     tab_objs = st.tabs(tabs)
@@ -1297,8 +1456,10 @@ def main() -> None:
         render_policy_exact(df, coef_df, selected_features, log_offset, model_spec)
     with tab_objs[4]:
         render_policy_approx(df, coef_df, selected_features, log_offset, model_spec)
-    if has_radii and len(tab_objs) > 5:
-        with tab_objs[5]:
+    with tab_objs[5]:
+        render_policy_plot(df, coef_df, selected_features, log_offset, model_spec)
+    if has_radii and len(tab_objs) > 6:
+        with tab_objs[6]:
             render_buffer_sensitivity(
                 df_radii, selected_features, sel_stations,
                 log_offset, sig_level, model_spec,
