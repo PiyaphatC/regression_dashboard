@@ -808,6 +808,26 @@ def _build_scenario_vals(
     return new
 
 
+def _approx_delta_pct_y(
+    coef_val: float, base_val: float, new_val: float,
+    base_pred: float, log_offset: float, model_spec: str,
+) -> float:
+    """Return the first-order approximate Δ%y for a single feature change.
+
+    Correct formulas per model specification:
+      log-log : log(y) = α + β·log(x+c)  →  Δ%y ≈ β × Δx / (x+c) × 100
+      semi-log: y = α + β·log(x+c)       →  Δ%y ≈ β × Δx / ((x+c)·y) × 100
+      linear  : y = α + β·x              →  Δ%y ≈ β × Δx / y × 100
+    """
+    delta_x = new_val - base_val
+    if model_spec == "log-log":
+        return coef_val * delta_x / (base_val + log_offset) * 100
+    elif model_spec == "semi-log":
+        return coef_val * delta_x / ((base_val + log_offset) * (base_pred + 1e-9)) * 100
+    else:  # linear
+        return coef_val * delta_x / (base_pred + 1e-9) * 100
+
+
 def _policy_sort_widget(key_suffix: str) -> str:
     """Render a sort-by selectbox and return the chosen column."""
     return st.selectbox(
@@ -925,8 +945,8 @@ def render_policy_approx(
     st.subheader("Policy Recommendation — Elasticity Approximation")
     st.caption(
         "Scenario: upgrade all poor-quality (−1) sidewalk to neutral (0). "
-        "Each column shows the approximate ridership change using: "
-        "Δ% ridership ≈ elasticity × Δ% feature."
+        "Each column shows the approximate ridership change using a first-order "
+        "marginal-effect formula appropriate for the chosen model specification."
     )
 
     walk_neg1 = _find_walk_vars(selected_features)
@@ -961,24 +981,17 @@ def render_policy_approx(
                 for feat in neg1_list:
                     base_val = base_vals.get(feat, 0.0)
                     new_val = 0.0  # neg1 → 0 means this variable becomes 0
-                    # % change in x
-                    pct_x = (new_val - base_val) / (base_val + 1e-9) * 100
 
-                    # Get elasticity
                     var_name = feat if model_spec == "linear" else f"log_{feat}"
                     coef_row = coef_df[coef_df["variable"] == var_name]
                     if coef_row.empty:
                         continue
                     coef_val = float(coef_row["coef"].values[0])
 
-                    if model_spec == "log-log":
-                        elasticity = coef_val
-                    elif model_spec == "semi-log":
-                        elasticity = coef_val / (base_pred + 1e-9)
-                    else:
-                        elasticity = coef_val * base_val / (base_pred + 1e-9)
-
-                    dim_pct_total += elasticity_impact(elasticity, pct_x)
+                    dim_pct_total += _approx_delta_pct_y(
+                        coef_val, base_val, new_val,
+                        base_pred, log_offset, model_spec,
+                    )
 
                 approx_riders = base_pred * dim_pct_total / 100
                 record[f"Δ {dim} (riders)"] = round(approx_riders)
@@ -1003,8 +1016,8 @@ def render_policy_approx(
     st.dataframe(result_df, use_container_width=True, hide_index=True, height=500)
 
     st.info(
-        "**Note:** The elasticity approximation is linear, so Combined = Sum of Individual "
-        "by definition. This approximation overestimates for large changes. "
+        "**Note:** The elasticity approximation is a first-order (linear) approximation, "
+        "so Combined = Sum of Individual by definition. "
         "Compare with the 'Policy (Exact)' tab to see the difference."
     )
 
@@ -1083,19 +1096,15 @@ def render_policy_plot(
         for td in target_dims:
             for feat in walk_neg1.get(td, []):
                 base_val = base_vals.get(feat, 0.0)
-                pct_x = (0.0 - base_val) / (base_val + 1e-9) * 100
                 var_name = feat if model_spec == "linear" else f"log_{feat}"
                 coef_row_match = coef_df[coef_df["variable"] == var_name]
                 if coef_row_match.empty:
                     continue
                 coef_val = float(coef_row_match["coef"].values[0])
-                if model_spec == "log-log":
-                    elasticity = coef_val
-                elif model_spec == "semi-log":
-                    elasticity = coef_val / (base_pred + 1e-9)
-                else:
-                    elasticity = coef_val * base_val / (base_pred + 1e-9)
-                approx_pct_total += elasticity_impact(elasticity, pct_x)
+                approx_pct_total += _approx_delta_pct_y(
+                    coef_val, base_val, 0.0,
+                    base_pred, log_offset, model_spec,
+                )
         approx_chg = base_pred * approx_pct_total / 100
 
         records.append({
