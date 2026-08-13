@@ -888,7 +888,6 @@ def render_policy_exact(
         }
 
         # Individual dimension scenarios
-        indiv_pcts = []
         for dim in ["Surface", "Shade", "Obstacle"]:
             neg1_list = walk_neg1.get(dim, [])
             zero_list = walk_zero.get(dim, [])
@@ -896,13 +895,9 @@ def render_policy_exact(
                 scenario = _build_scenario_vals(base_vals, neg1_list, zero_list, station_row)
                 new_pred = predict_ridership(coef_df, scenario, log_offset, model_spec)
                 chg = new_pred - base_pred
-                pct = chg / base_pred * 100 if base_pred > 0 else 0.0
                 record[f"Δ {dim} (riders)"] = round(chg)
-                record[f"Δ {dim} (%)"] = round(pct, 2)
-                indiv_pcts.append(pct)
             else:
                 record[f"Δ {dim} (riders)"] = "—"
-                record[f"Δ {dim} (%)"] = "—"
 
         # Combined scenario: all neg1 → 0 simultaneously
         all_neg1 = [v for vlist in walk_neg1.values() for v in vlist]
@@ -910,13 +905,7 @@ def render_policy_exact(
         combined = _build_scenario_vals(base_vals, all_neg1, all_zero, station_row)
         combined_pred = predict_ridership(coef_df, combined, log_offset, model_spec)
         combined_chg = combined_pred - base_pred
-        combined_pct = combined_chg / base_pred * 100 if base_pred > 0 else 0.0
         record["Δ Combined (riders)"] = round(combined_chg)
-        record["Δ Combined (%)"] = round(combined_pct, 2)
-
-        # Sum of individual %s for comparison
-        sum_indiv = sum(indiv_pcts)
-        record["Sum of Individual (%)"] = round(sum_indiv, 2)
 
         rows.append(record)
 
@@ -924,13 +913,6 @@ def render_policy_exact(
     result_df = result_df.sort_values(sort_col_label)
 
     st.dataframe(result_df, use_container_width=True, hide_index=True, height=500)
-
-    st.info(
-        "**Note:** The 'Combined' column uses the full model with all walkability variables "
-        "changed simultaneously. Due to the non-linear (log-log) model, "
-        "Combined ≠ Sum of Individual columns. The 'Sum of Individual' column is shown "
-        "for comparison."
-    )
 
     _policy_download(result_df, "exact")
 
@@ -995,18 +977,14 @@ def render_policy_approx(
 
                 approx_riders = base_pred * dim_pct_total / 100
                 record[f"Δ {dim} (riders)"] = round(approx_riders)
-                record[f"Δ {dim} (%)"] = round(dim_pct_total, 2)
                 indiv_pcts.append(dim_pct_total)
             else:
                 record[f"Δ {dim} (riders)"] = "—"
-                record[f"Δ {dim} (%)"] = "—"
 
         # Combined = sum of individual (linear approximation is additive)
         sum_pct = sum(indiv_pcts)
         approx_combined_riders = base_pred * sum_pct / 100
         record["Δ Combined (riders)"] = round(approx_combined_riders)
-        record["Δ Combined (%)"] = round(sum_pct, 2)
-        record["Sum of Individual (%)"] = round(sum_pct, 2)
 
         rows.append(record)
 
@@ -1014,12 +992,6 @@ def render_policy_approx(
     result_df = result_df.sort_values(sort_col_label)
 
     st.dataframe(result_df, use_container_width=True, hide_index=True, height=500)
-
-    st.info(
-        "**Note:** The elasticity approximation is a first-order (linear) approximation, "
-        "so Combined = Sum of Individual by definition. "
-        "Compare with the 'Policy (Exact)' tab to see the difference."
-    )
 
     _policy_download(result_df, "approx")
 
