@@ -851,6 +851,92 @@ def _policy_download(result_df: pd.DataFrame, key_suffix: str) -> None:
 
 # ── Tab 4: Policy Recommendation (Exact / What-if) ──────────────────────
 
+def _show_exact_calculation(
+    station_row: pd.Series, coef_df: pd.DataFrame,
+    selected_features: list[str], walk_neg1: dict, walk_zero: dict,
+    log_offset: float, model_spec: str,
+) -> None:
+    """Show detailed exact calculation for a selected station."""
+    c = log_offset
+    base_vals = {f: float(station_row[f]) for f in selected_features if f in station_row.index}
+    base_pred = predict_ridership(coef_df, base_vals, log_offset, model_spec)
+    st.markdown(f"**Base predicted ridership = {base_pred:,.1f}**")
+
+    for dim in ["Surface", "Shade", "Obstacle"]:
+        neg1_list = walk_neg1.get(dim, [])
+        zero_list = walk_zero.get(dim, [])
+        if not neg1_list:
+            continue
+        feat = neg1_list[0]
+        x_old = base_vals.get(feat, 0.0)
+        var_name = feat if model_spec == "linear" else f"log_{feat}"
+        cr = coef_df[coef_df["variable"] == var_name]
+        if cr.empty:
+            continue
+        beta = float(cr["coef"].values[0])
+        scenario = _build_scenario_vals(base_vals, neg1_list, zero_list, station_row)
+        new_pred = predict_ridership(coef_df, scenario, log_offset, model_spec)
+        chg = new_pred - base_pred
+
+        if model_spec == "log-log":
+            log_old = np.log(x_old + c)
+            delta_log = beta * (0 - log_old)
+            st.markdown(
+                f"**Δ {dim}:** `{feat}` = {x_old:.1f} → 0  \n"
+                f"β = {beta:+.4f}  \n"
+                f"log({x_old:.1f}+{c}) = {log_old:.4f} → log(0+{c}) = 0  \n"
+                f"Δlog(y) = {beta:.4f} × (0 − {log_old:.4f}) = {delta_log:+.4f}  \n"
+                f"y\_new = {new_pred:,.0f}, **Δ riders = {chg:+,.0f}**"
+            )
+        elif model_spec == "semi-log":
+            log_old = np.log(x_old + c)
+            delta_y = beta * (0 - log_old)
+            st.markdown(
+                f"**Δ {dim}:** `{feat}` = {x_old:.1f} → 0  \n"
+                f"β = {beta:+.4f}  \n"
+                f"Δy = {beta:.4f} × (log(0+{c}) − log({x_old:.1f}+{c})) = {delta_y:+.1f}  \n"
+                f"y\_new = {new_pred:,.0f}, **Δ riders = {chg:+,.0f}**"
+            )
+        else:
+            delta_x = 0 - x_old
+            st.markdown(
+                f"**Δ {dim}:** `{feat}` = {x_old:.1f} → 0  \n"
+                f"β = {beta:+.4f}  \n"
+                f"Δy = β × Δx = {beta:.4f} × {delta_x:.1f} = {chg:+.1f}  \n"
+                f"y\_new = {new_pred:,.0f}, **Δ riders = {chg:+,.0f}**"
+            )
+
+    # Combined
+    all_neg1 = [v for vlist in walk_neg1.values() for v in vlist]
+    all_zero = [v for vlist in walk_zero.values() for v in vlist]
+    combined = _build_scenario_vals(base_vals, all_neg1, all_zero, station_row)
+    combined_pred = predict_ridership(coef_df, combined, log_offset, model_spec)
+    combined_chg = combined_pred - base_pred
+    if model_spec == "log-log":
+        parts = []
+        total_dl = 0.0
+        for feat in all_neg1:
+            x_old = base_vals.get(feat, 0.0)
+            var_name = f"log_{feat}"
+            cr = coef_df[coef_df["variable"] == var_name]
+            if cr.empty or x_old == 0:
+                continue
+            beta = float(cr["coef"].values[0])
+            dl = beta * (0 - np.log(x_old + c))
+            total_dl += dl
+            short = feat.replace("sidewalk_length_", "").replace("_neg1", "")
+            parts.append(f"{short}: Δlog = {dl:+.4f}")
+        st.markdown(
+            f"**Δ Combined:** all neg1 → 0 at once  \n"
+            + "  \n".join(parts) + "  \n"
+            f"Σ Δlog(y) = {total_dl:+.4f}  \n"
+            f"y\_new = {base_pred:,.0f} × exp({total_dl:.4f}) = {combined_pred:,.0f}  \n"
+            f"**Δ riders = {combined_chg:+,.0f}**"
+        )
+    else:
+        st.markdown(f"**Δ Combined:** all neg1 → 0 at once → **Δ riders = {combined_chg:+,.0f}**")
+
+
 def render_policy_exact(
     df: pd.DataFrame, coef_df: pd.DataFrame,
     selected_features: list[str], log_offset: float,
@@ -859,7 +945,7 @@ def render_policy_exact(
     st.subheader("Policy Recommendation — Exact Prediction")
     st.caption(
         "Scenario: upgrade all poor-quality (−1) sidewalk to neutral (0). "
-        "Each column shows the predicted ridership change using the full model equation."
+        "Select a station below the table to see the full calculation."
     )
 
     walk_neg1 = _find_walk_vars(selected_features)
@@ -887,7 +973,6 @@ def render_policy_exact(
             "Base Ridership": round(base_pred),
         }
 
-        # Individual dimension scenarios
         for dim in ["Surface", "Shade", "Obstacle"]:
             neg1_list = walk_neg1.get(dim, [])
             zero_list = walk_zero.get(dim, [])
@@ -899,7 +984,6 @@ def render_policy_exact(
             else:
                 record[f"Δ {dim} (riders)"] = "—"
 
-        # Combined scenario: all neg1 → 0 simultaneously
         all_neg1 = [v for vlist in walk_neg1.values() for v in vlist]
         all_zero = [v for vlist in walk_zero.values() for v in vlist]
         combined = _build_scenario_vals(base_vals, all_neg1, all_zero, station_row)
@@ -916,8 +1000,79 @@ def render_policy_exact(
 
     _policy_download(result_df, "exact")
 
+    # Calculation detail
+    st.markdown("---")
+    station_names = sorted(df["display_name"].tolist())
+    sel = st.selectbox("Show calculation for station:", station_names, key="exact_calc_station")
+    sel_row = df[df["display_name"] == sel].iloc[0]
+    _show_exact_calculation(sel_row, coef_df, selected_features, walk_neg1, walk_zero, log_offset, model_spec)
+
 
 # ── Tab 5: Policy Recommendation (Elasticity Approximation) ─────────────
+
+def _show_approx_calculation(
+    station_row: pd.Series, coef_df: pd.DataFrame,
+    selected_features: list[str], walk_neg1: dict,
+    log_offset: float, model_spec: str,
+) -> None:
+    """Show detailed elasticity calculation for a selected station."""
+    c = log_offset
+    base_vals = {f: float(station_row[f]) for f in selected_features if f in station_row.index}
+    base_pred = predict_ridership(coef_df, base_vals, log_offset, model_spec)
+    st.markdown(f"**Base predicted ridership = {base_pred:,.1f}**")
+
+    indiv_pcts = []
+    for dim in ["Surface", "Shade", "Obstacle"]:
+        neg1_list = walk_neg1.get(dim, [])
+        if not neg1_list:
+            continue
+        feat = neg1_list[0]
+        x_old = base_vals.get(feat, 0.0)
+        var_name = feat if model_spec == "linear" else f"log_{feat}"
+        cr = coef_df[coef_df["variable"] == var_name]
+        if cr.empty:
+            continue
+        beta = float(cr["coef"].values[0])
+        delta_x = 0 - x_old
+        dim_pct = _approx_delta_pct_y(beta, x_old, 0.0, base_pred, log_offset, model_spec)
+        approx_riders = base_pred * dim_pct / 100
+        indiv_pcts.append((dim, dim_pct))
+
+        if model_spec == "log-log":
+            st.markdown(
+                f"**Δ {dim}:** `{feat}` = {x_old:.1f} → 0  \n"
+                f"β = {beta:+.4f}, c = {c}  \n"
+                f"Δ%y ≈ β × Δx / (x+c) × 100  \n"
+                f"= {beta:.4f} × ({delta_x:.1f}) / ({x_old:.1f}+{c}) × 100 = {dim_pct:+.4f}%  \n"
+                f"**Δ riders = {base_pred:,.0f} × {dim_pct:.4f}% = {approx_riders:+,.0f}**"
+            )
+        elif model_spec == "semi-log":
+            st.markdown(
+                f"**Δ {dim}:** `{feat}` = {x_old:.1f} → 0  \n"
+                f"β = {beta:+.4f}, c = {c}  \n"
+                f"Δ%y ≈ β × Δx / ((x+c)×y) × 100  \n"
+                f"= {beta:.4f} × ({delta_x:.1f}) / (({x_old:.1f}+{c})×{base_pred:.0f}) × 100 = {dim_pct:+.4f}%  \n"
+                f"**Δ riders = {base_pred:,.0f} × {dim_pct:.4f}% = {approx_riders:+,.0f}**"
+            )
+        else:
+            st.markdown(
+                f"**Δ {dim}:** `{feat}` = {x_old:.1f} → 0  \n"
+                f"β = {beta:+.4f}  \n"
+                f"Δ%y ≈ β × Δx / y × 100  \n"
+                f"= {beta:.4f} × ({delta_x:.1f}) / {base_pred:.0f} × 100 = {dim_pct:+.4f}%  \n"
+                f"**Δ riders = {base_pred:,.0f} × {dim_pct:.4f}% = {approx_riders:+,.0f}**"
+            )
+
+    # Combined
+    sum_pct = sum(p for _, p in indiv_pcts)
+    combined_riders = base_pred * sum_pct / 100
+    parts = " + ".join(f"{p:+.4f}%" for _, p in indiv_pcts)
+    st.markdown(
+        f"**Δ Combined:** sum of individual Δ%  \n"
+        f"Σ Δ% = {parts} = {sum_pct:+.4f}%  \n"
+        f"**Δ riders = {base_pred:,.0f} × {sum_pct:.4f}% = {combined_riders:+,.0f}**"
+    )
+
 
 def render_policy_approx(
     df: pd.DataFrame, coef_df: pd.DataFrame,
@@ -927,8 +1082,7 @@ def render_policy_approx(
     st.subheader("Policy Recommendation — Elasticity Approximation")
     st.caption(
         "Scenario: upgrade all poor-quality (−1) sidewalk to neutral (0). "
-        "Each column shows the approximate ridership change using a first-order "
-        "marginal-effect formula appropriate for the chosen model specification."
+        "Select a station below the table to see the full calculation."
     )
 
     walk_neg1 = _find_walk_vars(selected_features)
@@ -962,26 +1116,21 @@ def render_policy_approx(
                 dim_pct_total = 0.0
                 for feat in neg1_list:
                     base_val = base_vals.get(feat, 0.0)
-                    new_val = 0.0  # neg1 → 0 means this variable becomes 0
-
                     var_name = feat if model_spec == "linear" else f"log_{feat}"
                     coef_row = coef_df[coef_df["variable"] == var_name]
                     if coef_row.empty:
                         continue
                     coef_val = float(coef_row["coef"].values[0])
-
                     dim_pct_total += _approx_delta_pct_y(
-                        coef_val, base_val, new_val,
+                        coef_val, base_val, 0.0,
                         base_pred, log_offset, model_spec,
                     )
-
                 approx_riders = base_pred * dim_pct_total / 100
                 record[f"Δ {dim} (riders)"] = round(approx_riders)
                 indiv_pcts.append(dim_pct_total)
             else:
                 record[f"Δ {dim} (riders)"] = "—"
 
-        # Combined = sum of individual (linear approximation is additive)
         sum_pct = sum(indiv_pcts)
         approx_combined_riders = base_pred * sum_pct / 100
         record["Δ Combined (riders)"] = round(approx_combined_riders)
@@ -994,6 +1143,13 @@ def render_policy_approx(
     st.dataframe(result_df, use_container_width=True, hide_index=True, height=500)
 
     _policy_download(result_df, "approx")
+
+    # Calculation detail
+    st.markdown("---")
+    station_names = sorted(df["display_name"].tolist())
+    sel = st.selectbox("Show calculation for station:", station_names, key="approx_calc_station")
+    sel_row = df[df["display_name"] == sel].iloc[0]
+    _show_approx_calculation(sel_row, coef_df, selected_features, walk_neg1, log_offset, model_spec)
 
 
 # ── Tab 6: Policy Comparison Plot ────────────────────────────────────────
