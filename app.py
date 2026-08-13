@@ -1209,6 +1209,7 @@ def render_policy_plot(
     df: pd.DataFrame, coef_df: pd.DataFrame,
     selected_features: list[str], log_offset: float,
     model_spec: str = "log-log",
+    sw_dev_map: dict[str, float] | None = None,
 ) -> None:
     st.subheader("Policy Comparison — Exact vs Elasticity")
     st.caption(
@@ -1227,7 +1228,10 @@ def render_policy_plot(
         return
 
     dims = ["Surface", "Shade", "Obstacle"]
+    has_sw_dev = sw_dev_map and "sw_total_length" in selected_features
     available_scenarios = [f"Δ {d}" for d in dims if d in walk_neg1] + ["Δ Combined Walkability"]
+    if has_sw_dev:
+        available_scenarios += ["Δ SW Dev", "Δ Total"]
 
     # Controls
     c1, c2 = st.columns(2)
@@ -1250,41 +1254,76 @@ def render_policy_plot(
         base_pred = predict_ridership(coef_df, base_vals, log_offset, model_spec)
         station_label = row["display_name"]
 
-        # ── Exact ──
+        # ── Helper: SW Dev exact & elasticity changes ──
+        line_code = row.get("line_code", "")
+        delta_sw = sw_dev_map.get(line_code, 0.0) if has_sw_dev else 0.0
+        sw_exact_chg = 0.0
+        sw_approx_chg = 0.0
+        if has_sw_dev and delta_sw > 0:
+            sw_sc = dict(base_vals)
+            sw_sc["sw_total_length"] = base_vals.get("sw_total_length", 0.0) + delta_sw
+            sw_exact_chg = predict_ridership(coef_df, sw_sc, log_offset, model_spec) - base_pred
+            var_name = "sw_total_length" if model_spec == "linear" else "log_sw_total_length"
+            cr = coef_df[coef_df["variable"] == var_name]
+            if not cr.empty:
+                beta = float(cr["coef"].values[0])
+                sw_pct = _approx_delta_pct_y(
+                    beta, base_vals.get("sw_total_length", 0.0),
+                    base_vals.get("sw_total_length", 0.0) + delta_sw,
+                    base_pred, log_offset, model_spec,
+                )
+                sw_approx_chg = base_pred * sw_pct / 100
+
+        # ── Helper: Combined Walkability exact & elasticity ──
+        all_neg1 = [v for vlist in walk_neg1.values() for v in vlist]
+        all_zero = [v for vlist in walk_zero.values() for v in vlist]
+        combined_sc = _build_scenario_vals(base_vals, all_neg1, all_zero, row)
+        combined_exact_chg = predict_ridership(coef_df, combined_sc, log_offset, model_spec) - base_pred
+
+        walk_approx_pct = 0.0
+        for td in [d for d in dims if d in walk_neg1]:
+            for feat in walk_neg1.get(td, []):
+                bv = base_vals.get(feat, 0.0)
+                vn = feat if model_spec == "linear" else f"log_{feat}"
+                cr2 = coef_df[coef_df["variable"] == vn]
+                if cr2.empty:
+                    continue
+                walk_approx_pct += _approx_delta_pct_y(
+                    float(cr2["coef"].values[0]), bv, 0.0,
+                    base_pred, log_offset, model_spec,
+                )
+        combined_approx_chg = base_pred * walk_approx_pct / 100
+
+        # ── Select scenario values ──
         if scenario == "Δ Combined Walkability":
-            all_neg1 = [v for vlist in walk_neg1.values() for v in vlist]
-            all_zero = [v for vlist in walk_zero.values() for v in vlist]
-            sc_vals = _build_scenario_vals(base_vals, all_neg1, all_zero, row)
+            exact_chg = combined_exact_chg
+            approx_chg = combined_approx_chg
+        elif scenario == "Δ SW Dev":
+            exact_chg = sw_exact_chg
+            approx_chg = sw_approx_chg
+        elif scenario == "Δ Total":
+            exact_chg = combined_exact_chg + sw_exact_chg
+            approx_chg = combined_approx_chg + sw_approx_chg
         else:
             dim = scenario.replace("Δ ", "")
             neg1_list = walk_neg1.get(dim, [])
             zero_list = walk_zero.get(dim, [])
             sc_vals = _build_scenario_vals(base_vals, neg1_list, zero_list, row)
+            exact_chg = predict_ridership(coef_df, sc_vals, log_offset, model_spec) - base_pred
+            approx_chg_pct = 0.0
+            for feat in neg1_list:
+                bv = base_vals.get(feat, 0.0)
+                vn = feat if model_spec == "linear" else f"log_{feat}"
+                cr3 = coef_df[coef_df["variable"] == vn]
+                if not cr3.empty:
+                    approx_chg_pct += _approx_delta_pct_y(
+                        float(cr3["coef"].values[0]), bv, 0.0,
+                        base_pred, log_offset, model_spec,
+                    )
+            approx_chg = base_pred * approx_chg_pct / 100
 
-        new_pred = predict_ridership(coef_df, sc_vals, log_offset, model_spec)
-        exact_chg = new_pred - base_pred
         exact_pct = exact_chg / base_pred * 100 if base_pred > 0 else 0.0
-
-        # ── Elasticity ──
-        if scenario == "Δ Combined Walkability":
-            target_dims = [d for d in dims if d in walk_neg1]
-        else:
-            target_dims = [scenario.replace("Δ ", "")]
-
-        approx_pct_total = 0.0
-        for td in target_dims:
-            for feat in walk_neg1.get(td, []):
-                base_val = base_vals.get(feat, 0.0)
-                var_name = feat if model_spec == "linear" else f"log_{feat}"
-                coef_row_match = coef_df[coef_df["variable"] == var_name]
-                if coef_row_match.empty:
-                    continue
-                coef_val = float(coef_row_match["coef"].values[0])
-                approx_pct_total += _approx_delta_pct_y(
-                    coef_val, base_val, 0.0,
-                    base_pred, log_offset, model_spec,
-                )
-        approx_chg = base_pred * approx_pct_total / 100
+        approx_pct_total = approx_chg / base_pred * 100 if base_pred > 0 else 0.0
 
         records.append({
             "Station": station_label,
@@ -1616,7 +1655,7 @@ def main() -> None:
     with tab_objs[4]:
         render_policy_approx(df, coef_df, selected_features, log_offset, model_spec, sw_dev_map=sw_dev_map)
     with tab_objs[5]:
-        render_policy_plot(df, coef_df, selected_features, log_offset, model_spec)
+        render_policy_plot(df, coef_df, selected_features, log_offset, model_spec, sw_dev_map=sw_dev_map)
     if has_radii and len(tab_objs) > 6:
         with tab_objs[6]:
             render_buffer_sensitivity(
