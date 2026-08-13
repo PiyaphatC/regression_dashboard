@@ -25,6 +25,7 @@ from model import (
 
 DATA_PATH = "Output/combined_station_summary_expanded_rev16.csv"
 RADII_PATH = "Output/features_by_radius.csv"
+SW_DEV_PATH = "Output/sw_dev.xlsx"
 
 NON_FEATURE_COLS = {"entry", "source", "line_code", "station_name", "station", "display_name",
                     "line_color", "station_type", "station_typology", "radius_m",
@@ -80,6 +81,17 @@ DEFAULT_FEATURES = [
     "PRIM25",
     "STU25",
 ]
+
+
+@st.cache_data
+def load_sw_dev(path: str = SW_DEV_PATH) -> dict[str, float]:
+    """Load proposed sidewalk additions: {line_code: delta_meters}."""
+    try:
+        sw = pd.read_excel(path)
+        sw["delta_sw"] = sw["ความยาวทางเท้าที่เสนอเพิ่ม"].str.extract(r"([+-]?\d+)").astype(float)
+        return dict(zip(sw["รหัสสถานี"], sw["delta_sw"]))
+    except Exception:
+        return {}
 
 
 @st.cache_data
@@ -941,6 +953,7 @@ def render_policy_exact(
     df: pd.DataFrame, coef_df: pd.DataFrame,
     selected_features: list[str], log_offset: float,
     model_spec: str = "log-log",
+    sw_dev_map: dict[str, float] | None = None,
 ) -> None:
     st.subheader("Policy Recommendation — Exact Prediction")
     st.caption(
@@ -950,6 +963,7 @@ def render_policy_exact(
 
     walk_neg1 = _find_walk_vars(selected_features)
     walk_zero = _find_walk0_vars(selected_features)
+    has_sw_dev = sw_dev_map and "sw_total_length" in selected_features
 
     if not walk_neg1:
         st.warning(
@@ -989,7 +1003,21 @@ def render_policy_exact(
         combined = _build_scenario_vals(base_vals, all_neg1, all_zero, station_row)
         combined_pred = predict_ridership(coef_df, combined, log_offset, model_spec)
         combined_chg = combined_pred - base_pred
-        record["Δ Combined (riders)"] = round(combined_chg)
+        record["Δ Combined Walkability (riders)"] = round(combined_chg)
+
+        # Proposed SW development
+        if has_sw_dev:
+            line_code = station_row.get("line_code", "")
+            delta_sw = sw_dev_map.get(line_code, 0.0)
+            record["Proposed SW (m)"] = round(delta_sw)
+            sw_dev_riders = 0
+            if delta_sw > 0:
+                sw_scenario = dict(base_vals)
+                sw_scenario["sw_total_length"] = base_vals.get("sw_total_length", 0.0) + delta_sw
+                sw_new_pred = predict_ridership(coef_df, sw_scenario, log_offset, model_spec)
+                sw_dev_riders = round(sw_new_pred - base_pred)
+            record["Δ SW Dev (riders)"] = sw_dev_riders
+            record["Δ Total (riders)"] = round(combined_chg) + sw_dev_riders
 
         rows.append(record)
 
@@ -1078,6 +1106,7 @@ def render_policy_approx(
     df: pd.DataFrame, coef_df: pd.DataFrame,
     selected_features: list[str], log_offset: float,
     model_spec: str = "log-log",
+    sw_dev_map: dict[str, float] | None = None,
 ) -> None:
     st.subheader("Policy Recommendation — Elasticity Approximation")
     st.caption(
@@ -1086,6 +1115,7 @@ def render_policy_approx(
     )
 
     walk_neg1 = _find_walk_vars(selected_features)
+    has_sw_dev = sw_dev_map and "sw_total_length" in selected_features
 
     if not walk_neg1:
         st.warning(
@@ -1133,7 +1163,28 @@ def render_policy_approx(
 
         sum_pct = sum(indiv_pcts)
         approx_combined_riders = base_pred * sum_pct / 100
-        record["Δ Combined (riders)"] = round(approx_combined_riders)
+        combined_walkability = round(approx_combined_riders)
+        record["Δ Combined Walkability (riders)"] = combined_walkability
+
+        # Proposed SW development
+        if has_sw_dev:
+            line_code = station_row.get("line_code", "")
+            delta_sw = sw_dev_map.get(line_code, 0.0)
+            record["Proposed SW (m)"] = round(delta_sw)
+            sw_dev_riders = 0
+            if delta_sw > 0:
+                sw_base = base_vals.get("sw_total_length", 0.0)
+                var_name = "sw_total_length" if model_spec == "linear" else "log_sw_total_length"
+                cr = coef_df[coef_df["variable"] == var_name]
+                if not cr.empty:
+                    beta = float(cr["coef"].values[0])
+                    sw_pct = _approx_delta_pct_y(
+                        beta, sw_base, sw_base + delta_sw,
+                        base_pred, log_offset, model_spec,
+                    )
+                    sw_dev_riders = round(base_pred * sw_pct / 100)
+            record["Δ SW Dev (riders)"] = sw_dev_riders
+            record["Δ Total (riders)"] = combined_walkability + sw_dev_riders
 
         rows.append(record)
 
@@ -1176,7 +1227,7 @@ def render_policy_plot(
         return
 
     dims = ["Surface", "Shade", "Obstacle"]
-    available_scenarios = [f"Δ {d}" for d in dims if d in walk_neg1] + ["Δ Combined"]
+    available_scenarios = [f"Δ {d}" for d in dims if d in walk_neg1] + ["Δ Combined Walkability"]
 
     # Controls
     c1, c2 = st.columns(2)
@@ -1200,7 +1251,7 @@ def render_policy_plot(
         station_label = row["display_name"]
 
         # ── Exact ──
-        if scenario == "Δ Combined":
+        if scenario == "Δ Combined Walkability":
             all_neg1 = [v for vlist in walk_neg1.values() for v in vlist]
             all_zero = [v for vlist in walk_zero.values() for v in vlist]
             sc_vals = _build_scenario_vals(base_vals, all_neg1, all_zero, row)
@@ -1215,7 +1266,7 @@ def render_policy_plot(
         exact_pct = exact_chg / base_pred * 100 if base_pred > 0 else 0.0
 
         # ── Elasticity ──
-        if scenario == "Δ Combined":
+        if scenario == "Δ Combined Walkability":
             target_dims = [d for d in dims if d in walk_neg1]
         else:
             target_dims = [scenario.replace("Δ ", "")]
@@ -1442,6 +1493,7 @@ def main() -> None:
         radii_list = None
 
     df_all = load_data()
+    sw_dev_map = load_sw_dev()
 
     # ── Pre-sidebar optimization pass ─────────────────────────────────────
     # Must update checkbox session_state BEFORE build_sidebar renders them.
@@ -1560,9 +1612,9 @@ def main() -> None:
     with tab_objs[2]:
         render_whatif(df, coef_df, selected_features, log_offset, model_spec)
     with tab_objs[3]:
-        render_policy_exact(df, coef_df, selected_features, log_offset, model_spec)
+        render_policy_exact(df, coef_df, selected_features, log_offset, model_spec, sw_dev_map=sw_dev_map)
     with tab_objs[4]:
-        render_policy_approx(df, coef_df, selected_features, log_offset, model_spec)
+        render_policy_approx(df, coef_df, selected_features, log_offset, model_spec, sw_dev_map=sw_dev_map)
     with tab_objs[5]:
         render_policy_plot(df, coef_df, selected_features, log_offset, model_spec)
     if has_radii and len(tab_objs) > 6:
