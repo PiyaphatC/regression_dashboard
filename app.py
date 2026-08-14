@@ -824,17 +824,17 @@ def _approx_delta_pct_y(
     coef_val: float, base_val: float, new_val: float,
     base_pred: float, log_offset: float, model_spec: str,
 ) -> float:
-    """Return the first-order approximate Δ%y for a single feature change.
+    """Return Δ%y for a single feature change.
 
-    Correct formulas per model specification:
-      log-log : log(y) = α + β·log(x+c)  →  Δ%y ≈ β × Δlog(x+c) × 100
-      semi-log: y = α + β·log(x+c)       →  Δ%y ≈ β × Δlog(x+c) / y × 100
-      linear  : y = α + β·x              →  Δ%y ≈ β × Δx / y × 100
+    Formulas per model specification:
+      log-log : log(y) = α + β·log(x+c)  →  Δ%y = (exp(β × Δlog(x+c)) − 1) × 100
+      semi-log: y = α + β·log(x+c)       →  Δ%y = β × Δlog(x+c) / y × 100
+      linear  : y = α + β·x              →  Δ%y = β × Δx / y × 100
     where Δlog(x+c) = ln(x_new + c) − ln(x_old + c)
     """
     if model_spec == "log-log":
         delta_log_x = np.log(new_val + log_offset) - np.log(base_val + log_offset)
-        return coef_val * delta_log_x * 100
+        return (np.exp(coef_val * delta_log_x) - 1) * 100
     elif model_spec == "semi-log":
         delta_log_x = np.log(new_val + log_offset) - np.log(base_val + log_offset)
         return coef_val * delta_log_x / (base_pred + 1e-9) * 100
@@ -1072,12 +1072,13 @@ def _show_approx_calculation(
             log_old = np.log(x_old + c)
             log_new = np.log(0.0 + c)
             delta_log = log_new - log_old
+            delta_log_y = beta * delta_log
             st.markdown(
                 f"**Δ {dim}:** `{feat}` = {x_old:.1f} → 0  \n"
                 f"β = {beta:+.4f}, c = {c}  \n"
                 f"Δlog(x+c) = ln(0+{c}) − ln({x_old:.1f}+{c}) = {log_new:.4f} − {log_old:.4f} = {delta_log:+.4f}  \n"
-                f"Δ%y ≈ β × Δlog(x+c) × 100  \n"
-                f"= {beta:.4f} × ({delta_log:+.4f}) × 100 = {dim_pct:+.4f}%  \n"
+                f"Δlog(y) = β × Δlog(x+c) = {beta:.4f} × ({delta_log:+.4f}) = {delta_log_y:+.4f}  \n"
+                f"Δ%y = (e^{{Δlog(y)}} − 1) × 100 = (e^{{{delta_log_y:+.4f}}} − 1) × 100 = {dim_pct:+.4f}%  \n"
                 f"**Δ riders = {base_pred:,.0f} × {dim_pct:.4f}% = {approx_riders:+,.0f}**"
             )
         elif model_spec == "semi-log":
