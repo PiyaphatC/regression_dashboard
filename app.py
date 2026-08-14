@@ -964,71 +964,86 @@ def render_policy_exact(
 ) -> None:
     st.subheader("Policy Recommendation — Exact Prediction")
     st.caption(
-        "Scenario: upgrade all poor-quality (−1) sidewalk to neutral (0). "
-        "Select a station below the table to see the full calculation."
+        "Scenario: upgrade poor-quality (−1) surface & shade sidewalk to neutral (0), "
+        "plus proposed sidewalk development. Combined effect applies all changes simultaneously."
     )
 
     walk_neg1 = _find_walk_vars(selected_features)
     walk_zero = _find_walk0_vars(selected_features)
     has_sw_dev = sw_dev_map and "sw_total_length" in selected_features
 
-    if not walk_neg1:
+    # Surface / Shade neg1 variable names (if in the model)
+    surface_neg1_list = walk_neg1.get("Surface", [])
+    shade_neg1_list = walk_neg1.get("Shade", [])
+    surface_zero_list = walk_zero.get("Surface", [])
+    shade_zero_list = walk_zero.get("Shade", [])
+
+    if not surface_neg1_list and not shade_neg1_list and not has_sw_dev:
         st.warning(
-            "No walkability neg1 variables are selected in the model. "
-            "Please add surface/shade/obstacle neg1 variables to see policy impacts."
+            "No surface/shade neg1 variables or SW development data available. "
+            "Please add sidewalk variables to see policy impacts."
         )
         return
 
     sort_col_label = _policy_sort_widget("exact")
-    sort_col = "line_color" if sort_col_label == "Line Color" else "station_typology"
 
     rows = []
     for _, station_row in df.iterrows():
         base_vals = {f: float(station_row[f]) for f in selected_features if f in station_row.index}
         base_pred = predict_ridership(coef_df, base_vals, log_offset, model_spec)
+        actual = float(station_row["entry"])
+        line_code = station_row.get("line_code", "")
+
+        # Raw neg1 metre values
+        surface_m = float(station_row.get("sidewalk_length_surface_neg1", 0.0))
+        shade_m = float(station_row.get("sidewalk_length_shade_neg1", 0.0))
+        delta_sw = sw_dev_map.get(line_code, 0.0) if has_sw_dev else 0.0
 
         record: dict = {
-            "Station": station_row["display_name"],
+            "Station": station_row.get("station_name", ""),
+            "Station ID": line_code,
             "Line Color": station_row.get("line_color", ""),
-            "Station Typology": station_row.get("station_typology", ""),
-            "Base Ridership": round(base_pred),
+            "Observed Ridership": round(actual),
+            "Predicted Ridership": round(base_pred),
+            "Surface −1 (m)": round(surface_m),
+            "Shade −1 (m)": round(shade_m),
+            "Proposed SW (m)": round(delta_sw),
         }
 
-        for dim in ["Surface", "Shade", "Obstacle"]:
-            neg1_list = walk_neg1.get(dim, [])
-            zero_list = walk_zero.get(dim, [])
-            if neg1_list:
-                scenario = _build_scenario_vals(base_vals, neg1_list, zero_list, station_row)
-                new_pred = predict_ridership(coef_df, scenario, log_offset, model_spec)
-                chg = new_pred - base_pred
-                record[f"Δ {dim} (riders)"] = round(chg)
-            else:
-                record[f"Δ {dim} (riders)"] = "—"
+        # Δ Surface: set surface_neg1 → 0
+        if surface_neg1_list:
+            sc = _build_scenario_vals(base_vals, surface_neg1_list, surface_zero_list, station_row)
+            chg = predict_ridership(coef_df, sc, log_offset, model_spec) - base_pred
+            record["Δ Surface (riders)"] = round(chg)
+        else:
+            record["Δ Surface (riders)"] = 0
 
-        all_neg1 = [v for vlist in walk_neg1.values() for v in vlist]
-        all_zero = [v for vlist in walk_zero.values() for v in vlist]
-        combined = _build_scenario_vals(base_vals, all_neg1, all_zero, station_row)
-        combined_pred = predict_ridership(coef_df, combined, log_offset, model_spec)
-        combined_chg = combined_pred - base_pred
-        record["Δ Combined Walkability (riders)"] = round(combined_chg)
+        # Δ Shade: set shade_neg1 → 0
+        if shade_neg1_list:
+            sc = _build_scenario_vals(base_vals, shade_neg1_list, shade_zero_list, station_row)
+            chg = predict_ridership(coef_df, sc, log_offset, model_spec) - base_pred
+            record["Δ Shade (riders)"] = round(chg)
+        else:
+            record["Δ Shade (riders)"] = 0
 
-        # Proposed SW development
-        if has_sw_dev:
-            line_code = station_row.get("line_code", "")
-            delta_sw = sw_dev_map.get(line_code, 0.0)
-            record["Proposed SW (m)"] = round(delta_sw)
-            sw_dev_riders = 0
-            if delta_sw > 0:
-                sw_scenario = dict(base_vals)
-                sw_scenario["sw_total_length"] = base_vals.get("sw_total_length", 0.0) + delta_sw
-                sw_new_pred = predict_ridership(coef_df, sw_scenario, log_offset, model_spec)
-                sw_dev_riders = round(sw_new_pred - base_pred)
-            record["Δ SW Dev (riders)"] = sw_dev_riders
-            # Total: apply walkability + SW dev simultaneously
-            total_scenario = dict(combined)
-            total_scenario["sw_total_length"] = combined.get("sw_total_length", base_vals.get("sw_total_length", 0.0)) + delta_sw
-            total_pred = predict_ridership(coef_df, total_scenario, log_offset, model_spec)
-            record["Δ Total (riders)"] = round(total_pred - base_pred)
+        # Δ Proposed SW: add proposed sidewalk length
+        sw_chg = 0
+        if has_sw_dev and delta_sw > 0:
+            sw_sc = dict(base_vals)
+            sw_sc["sw_total_length"] = base_vals.get("sw_total_length", 0.0) + delta_sw
+            sw_chg = round(predict_ridership(coef_df, sw_sc, log_offset, model_spec) - base_pred)
+        record["Δ Proposed SW (riders)"] = sw_chg
+
+        # Combined: surface_neg1→0 + shade_neg1→0 + proposed SW, all at once
+        combined_neg1 = surface_neg1_list + shade_neg1_list
+        combined_zero = surface_zero_list + shade_zero_list
+        combined_sc = _build_scenario_vals(base_vals, combined_neg1, combined_zero, station_row)
+        if has_sw_dev and delta_sw > 0:
+            combined_sc["sw_total_length"] = combined_sc.get(
+                "sw_total_length", base_vals.get("sw_total_length", 0.0)
+            ) + delta_sw
+        combined_chg = predict_ridership(coef_df, combined_sc, log_offset, model_spec) - base_pred
+        record["Δ Combined (riders)"] = round(combined_chg)
 
         rows.append(record)
 
@@ -1142,113 +1157,148 @@ def _show_approx_calculation(
         )
 
 
+def _calc_delta_riders_elasticity(
+    coef_df: pd.DataFrame, feat_list: list[str],
+    base_vals: dict[str, float], new_val: float,
+    actual: float, log_offset: float, model_spec: str,
+) -> float:
+    """Compute Δ riders using elasticity (Δlog(y)) applied to actual ridership."""
+    if model_spec == "log-log":
+        total_dl = 0.0
+        for feat in feat_list:
+            bv = base_vals.get(feat, 0.0)
+            vn = f"log_{feat}"
+            cr = coef_df[coef_df["variable"] == vn]
+            if cr.empty:
+                continue
+            total_dl += _delta_log_y(float(cr["coef"].values[0]), bv, new_val, log_offset)
+        return actual * ((np.exp(total_dl) - 1) * 100) / 100
+    else:
+        total_pct = 0.0
+        for feat in feat_list:
+            bv = base_vals.get(feat, 0.0)
+            vn = feat if model_spec == "linear" else f"log_{feat}"
+            cr = coef_df[coef_df["variable"] == vn]
+            if cr.empty:
+                continue
+            total_pct += _approx_delta_pct_y(
+                float(cr["coef"].values[0]), bv, new_val,
+                actual, log_offset, model_spec,
+            )
+        return actual * total_pct / 100
+
+
 def render_policy_approx(
     df: pd.DataFrame, coef_df: pd.DataFrame,
     selected_features: list[str], log_offset: float,
     model_spec: str = "log-log",
     sw_dev_map: dict[str, float] | None = None,
 ) -> None:
-    st.subheader("Policy Recommendation — Elasticity Approximation")
+    st.subheader("Policy Recommendation — Elasticity")
     st.caption(
-        "Scenario: upgrade all poor-quality (−1) sidewalk to neutral (0). "
-        "Select a station below the table to see the full calculation."
+        "Same scenarios as the Exact tab, but uses **model coefficients × observed ridership** "
+        "to estimate rider changes instead of re-running the full prediction equation."
     )
 
     walk_neg1 = _find_walk_vars(selected_features)
     has_sw_dev = sw_dev_map and "sw_total_length" in selected_features
 
-    if not walk_neg1:
+    surface_neg1_list = walk_neg1.get("Surface", [])
+    shade_neg1_list = walk_neg1.get("Shade", [])
+
+    if not surface_neg1_list and not shade_neg1_list and not has_sw_dev:
         st.warning(
-            "No walkability neg1 variables are selected in the model. "
-            "Please add surface/shade/obstacle neg1 variables to see policy impacts."
+            "No surface/shade neg1 variables or SW development data available. "
+            "Please add sidewalk variables to see policy impacts."
         )
         return
 
     sort_col_label = _policy_sort_widget("approx")
-    sort_col = "line_color" if sort_col_label == "Line Color" else "station_typology"
 
     rows = []
     for _, station_row in df.iterrows():
         base_vals = {f: float(station_row[f]) for f in selected_features if f in station_row.index}
-        base_pred = predict_ridership(coef_df, base_vals, log_offset, model_spec)
+        actual = float(station_row["entry"])
+        line_code = station_row.get("line_code", "")
+
+        surface_m = float(station_row.get("sidewalk_length_surface_neg1", 0.0))
+        shade_m = float(station_row.get("sidewalk_length_shade_neg1", 0.0))
+        delta_sw = sw_dev_map.get(line_code, 0.0) if has_sw_dev else 0.0
 
         record: dict = {
-            "Station": station_row["display_name"],
+            "Station": station_row.get("station_name", ""),
+            "Station ID": line_code,
             "Line Color": station_row.get("line_color", ""),
-            "Station Typology": station_row.get("station_typology", ""),
-            "Base Ridership": round(base_pred),
+            "Observed Ridership": round(actual),
+            "Predicted Ridership": round(predict_ridership(coef_df, base_vals, log_offset, model_spec)),
+            "Surface −1 (m)": round(surface_m),
+            "Shade −1 (m)": round(shade_m),
+            "Proposed SW (m)": round(delta_sw),
         }
 
-        total_delta_log_y = 0.0  # accumulate Δlog(y) across all dims (log-log)
-        indiv_pcts = []          # for semi-log / linear (additive in y)
-        for dim in ["Surface", "Shade", "Obstacle"]:
-            neg1_list = walk_neg1.get(dim, [])
-            if neg1_list:
-                dim_delta_log_y = 0.0
-                dim_pct_total = 0.0
-                for feat in neg1_list:
-                    base_val = base_vals.get(feat, 0.0)
-                    var_name = feat if model_spec == "linear" else f"log_{feat}"
-                    coef_row = coef_df[coef_df["variable"] == var_name]
-                    if coef_row.empty:
-                        continue
-                    coef_val = float(coef_row["coef"].values[0])
-                    if model_spec == "log-log":
-                        dl = _delta_log_y(coef_val, base_val, 0.0, log_offset)
-                        dim_delta_log_y += dl
-                    else:
-                        dim_pct_total += _approx_delta_pct_y(
-                            coef_val, base_val, 0.0,
-                            base_pred, log_offset, model_spec,
-                        )
-                if model_spec == "log-log":
-                    dim_pct = (np.exp(dim_delta_log_y) - 1) * 100
-                    approx_riders = base_pred * dim_pct / 100
-                    total_delta_log_y += dim_delta_log_y
-                else:
-                    approx_riders = base_pred * dim_pct_total / 100
-                    indiv_pcts.append(dim_pct_total)
-                record[f"Δ {dim} (riders)"] = round(approx_riders)
-            else:
-                record[f"Δ {dim} (riders)"] = "—"
-
-        if model_spec == "log-log":
-            combined_pct = (np.exp(total_delta_log_y) - 1) * 100
-        else:
-            combined_pct = sum(indiv_pcts)
-        approx_combined_riders = base_pred * combined_pct / 100
-        combined_walkability = round(approx_combined_riders)
-        record["Δ Combined Walkability (riders)"] = combined_walkability
-
-        # Proposed SW development
-        if has_sw_dev:
-            line_code = station_row.get("line_code", "")
-            delta_sw = sw_dev_map.get(line_code, 0.0)
-            record["Proposed SW (m)"] = round(delta_sw)
-            sw_dev_riders = 0
-            sw_delta_log = 0.0
-            if delta_sw > 0:
-                sw_base = base_vals.get("sw_total_length", 0.0)
-                var_name = "sw_total_length" if model_spec == "linear" else "log_sw_total_length"
-                cr = coef_df[coef_df["variable"] == var_name]
-                if not cr.empty:
-                    beta = float(cr["coef"].values[0])
-                    if model_spec == "log-log":
-                        sw_delta_log = _delta_log_y(beta, sw_base, sw_base + delta_sw, log_offset)
-                        sw_dev_riders = round(base_pred * ((np.exp(sw_delta_log) - 1) * 100) / 100)
-                    else:
-                        sw_pct = _approx_delta_pct_y(
-                            beta, sw_base, sw_base + delta_sw,
-                            base_pred, log_offset, model_spec,
-                        )
-                        sw_dev_riders = round(base_pred * sw_pct / 100)
-            record["Δ SW Dev (riders)"] = sw_dev_riders
+        # Δ Surface: coefficient applied to actual ridership
+        surface_dl = 0.0
+        surface_chg = 0.0
+        if surface_neg1_list:
             if model_spec == "log-log":
-                total_delta_log = total_delta_log_y + sw_delta_log
-                total_pct = (np.exp(total_delta_log) - 1) * 100
-                record["Δ Total (riders)"] = round(base_pred * total_pct / 100)
+                for feat in surface_neg1_list:
+                    bv = base_vals.get(feat, 0.0)
+                    cr = coef_df[coef_df["variable"] == f"log_{feat}"]
+                    if not cr.empty:
+                        surface_dl += _delta_log_y(float(cr["coef"].values[0]), bv, 0.0, log_offset)
+                surface_chg = actual * ((np.exp(surface_dl) - 1) * 100) / 100
             else:
-                record["Δ Total (riders)"] = combined_walkability + sw_dev_riders
+                surface_chg = _calc_delta_riders_elasticity(
+                    coef_df, surface_neg1_list, base_vals, 0.0,
+                    actual, log_offset, model_spec,
+                )
+        record["Δ Surface (riders)"] = round(surface_chg)
+
+        # Δ Shade: coefficient applied to actual ridership
+        shade_dl = 0.0
+        shade_chg = 0.0
+        if shade_neg1_list:
+            if model_spec == "log-log":
+                for feat in shade_neg1_list:
+                    bv = base_vals.get(feat, 0.0)
+                    cr = coef_df[coef_df["variable"] == f"log_{feat}"]
+                    if not cr.empty:
+                        shade_dl += _delta_log_y(float(cr["coef"].values[0]), bv, 0.0, log_offset)
+                shade_chg = actual * ((np.exp(shade_dl) - 1) * 100) / 100
+            else:
+                shade_chg = _calc_delta_riders_elasticity(
+                    coef_df, shade_neg1_list, base_vals, 0.0,
+                    actual, log_offset, model_spec,
+                )
+        record["Δ Shade (riders)"] = round(shade_chg)
+
+        # Δ Proposed SW: coefficient applied to actual ridership
+        sw_dl = 0.0
+        sw_chg = 0.0
+        if has_sw_dev and delta_sw > 0:
+            sw_base = base_vals.get("sw_total_length", 0.0)
+            vn = "sw_total_length" if model_spec == "linear" else "log_sw_total_length"
+            cr = coef_df[coef_df["variable"] == vn]
+            if not cr.empty:
+                beta = float(cr["coef"].values[0])
+                if model_spec == "log-log":
+                    sw_dl = _delta_log_y(beta, sw_base, sw_base + delta_sw, log_offset)
+                    sw_chg = actual * ((np.exp(sw_dl) - 1) * 100) / 100
+                else:
+                    sw_pct = _approx_delta_pct_y(
+                        beta, sw_base, sw_base + delta_sw,
+                        actual, log_offset, model_spec,
+                    )
+                    sw_chg = actual * sw_pct / 100
+        record["Δ Proposed SW (riders)"] = round(sw_chg)
+
+        # Combined: sum Δlog(y) in log space, then apply to actual ridership
+        if model_spec == "log-log":
+            combined_dl = surface_dl + shade_dl + sw_dl
+            combined_chg = actual * ((np.exp(combined_dl) - 1) * 100) / 100
+        else:
+            combined_chg = surface_chg + shade_chg + sw_chg
+        record["Δ Combined (riders)"] = round(combined_chg)
 
         rows.append(record)
 
@@ -1267,7 +1317,236 @@ def render_policy_approx(
     _show_approx_calculation(sel_row, coef_df, selected_features, walk_neg1, log_offset, model_spec)
 
 
-# ── Tab 6: Policy Comparison Plot ────────────────────────────────────────
+# ── Tab 6: Policy (Observed Base) ────────────────────────────────────────
+
+def _show_observed_calculation(
+    station_row: pd.Series, coef_df: pd.DataFrame,
+    selected_features: list[str], walk_neg1: dict,
+    log_offset: float, model_spec: str,
+) -> None:
+    """Show detailed elasticity calculation using observed ridership as base."""
+    c = log_offset
+    base_vals = {f: float(station_row[f]) for f in selected_features if f in station_row.index}
+    actual = float(station_row["entry"])
+    st.markdown(f"**Base observed ridership = {actual:,.0f}**")
+
+    indiv_pcts = []
+    indiv_delta_logs = []
+    for dim in ["Surface", "Shade", "Obstacle"]:
+        neg1_list = walk_neg1.get(dim, [])
+        if not neg1_list:
+            continue
+        feat = neg1_list[0]
+        x_old = base_vals.get(feat, 0.0)
+        var_name = feat if model_spec == "linear" else f"log_{feat}"
+        cr = coef_df[coef_df["variable"] == var_name]
+        if cr.empty:
+            continue
+        beta = float(cr["coef"].values[0])
+
+        if model_spec == "log-log":
+            log_old = np.log(x_old + c)
+            log_new = np.log(0.0 + c)
+            delta_log = log_new - log_old
+            delta_log_y = beta * delta_log
+            dim_pct = (np.exp(delta_log_y) - 1) * 100
+            approx_riders = actual * dim_pct / 100
+            indiv_delta_logs.append((dim, delta_log_y))
+            st.markdown(
+                f"**Δ {dim}:** `{feat}` = {x_old:.1f} → 0  \n"
+                f"β = {beta:+.4f}, c = {c}  \n"
+                f"Δlog(x+c) = ln(0+{c}) − ln({x_old:.1f}+{c}) = {log_new:.4f} − {log_old:.4f} = {delta_log:+.4f}  \n"
+                f"Δlog(y) = β × Δlog(x+c) = {beta:.4f} × ({delta_log:+.4f}) = {delta_log_y:+.4f}  \n"
+                f"Δ%y = (e^{{Δlog(y)}} − 1) × 100 = (e^{{{delta_log_y:+.4f}}} − 1) × 100 = {dim_pct:+.4f}%  \n"
+                f"**Δ riders = {actual:,.0f} × {dim_pct:.4f}% = {approx_riders:+,.0f}**"
+            )
+        elif model_spec == "semi-log":
+            log_old = np.log(x_old + c)
+            log_new = np.log(0.0 + c)
+            delta_log = log_new - log_old
+            dim_pct = _approx_delta_pct_y(beta, x_old, 0.0, actual, log_offset, model_spec)
+            approx_riders = actual * dim_pct / 100
+            indiv_pcts.append((dim, dim_pct))
+            st.markdown(
+                f"**Δ {dim}:** `{feat}` = {x_old:.1f} → 0  \n"
+                f"β = {beta:+.4f}, c = {c}  \n"
+                f"Δlog(x+c) = ln(0+{c}) − ln({x_old:.1f}+{c}) = {log_new:.4f} − {log_old:.4f} = {delta_log:+.4f}  \n"
+                f"Δ%y = β × Δlog(x+c) / y × 100  \n"
+                f"= {beta:.4f} × ({delta_log:+.4f}) / {actual:.0f} × 100 = {dim_pct:+.4f}%  \n"
+                f"**Δ riders = {actual:,.0f} × {dim_pct:.4f}% = {approx_riders:+,.0f}**"
+            )
+        else:
+            delta_x = 0 - x_old
+            dim_pct = _approx_delta_pct_y(beta, x_old, 0.0, actual, log_offset, model_spec)
+            approx_riders = actual * dim_pct / 100
+            indiv_pcts.append((dim, dim_pct))
+            st.markdown(
+                f"**Δ {dim}:** `{feat}` = {x_old:.1f} → 0  \n"
+                f"β = {beta:+.4f}  \n"
+                f"Δ%y = β × Δx / y × 100  \n"
+                f"= {beta:.4f} × ({delta_x:.1f}) / {actual:.0f} × 100 = {dim_pct:+.4f}%  \n"
+                f"**Δ riders = {actual:,.0f} × {dim_pct:.4f}% = {approx_riders:+,.0f}**"
+            )
+
+    # Combined
+    if model_spec == "log-log":
+        total_delta_log = sum(dl for _, dl in indiv_delta_logs)
+        combined_pct = (np.exp(total_delta_log) - 1) * 100
+        combined_riders = actual * combined_pct / 100
+        parts = " + ".join(f"{dl:+.4f}" for _, dl in indiv_delta_logs)
+        st.markdown(
+            f"**Δ Combined:** sum Δlog(y) in log space, then convert  \n"
+            f"Σ Δlog(y) = {parts} = {total_delta_log:+.4f}  \n"
+            f"Δ%y = (e^{{{total_delta_log:+.4f}}} − 1) × 100 = {combined_pct:+.4f}%  \n"
+            f"**Δ riders = {actual:,.0f} × {combined_pct:.4f}% = {combined_riders:+,.0f}**"
+        )
+    else:
+        sum_pct = sum(p for _, p in indiv_pcts)
+        combined_riders = actual * sum_pct / 100
+        parts = " + ".join(f"{p:+.4f}%" for _, p in indiv_pcts)
+        st.markdown(
+            f"**Δ Combined:** sum of individual Δ%  \n"
+            f"Σ Δ% = {parts} = {sum_pct:+.4f}%  \n"
+            f"**Δ riders = {actual:,.0f} × {sum_pct:.4f}% = {combined_riders:+,.0f}**"
+        )
+
+
+def render_policy_observed(
+    df: pd.DataFrame, coef_df: pd.DataFrame,
+    selected_features: list[str], log_offset: float,
+    model_spec: str = "log-log",
+    sw_dev_map: dict[str, float] | None = None,
+) -> None:
+    st.subheader("Policy Recommendation — Observed Base")
+    st.caption(
+        "Same elasticity calculation as the Elasticity tab, but uses **actual observed ridership** "
+        "instead of model-predicted ridership as the base for computing rider changes."
+    )
+
+    walk_neg1 = _find_walk_vars(selected_features)
+    has_sw_dev = sw_dev_map and "sw_total_length" in selected_features
+
+    if not walk_neg1:
+        st.warning(
+            "No walkability neg1 variables are selected in the model. "
+            "Please add surface/shade/obstacle neg1 variables to see policy impacts."
+        )
+        return
+
+    sort_col_label = _policy_sort_widget("observed")
+    sort_col = "line_color" if sort_col_label == "Line Color" else "station_typology"
+
+    rows = []
+    for _, station_row in df.iterrows():
+        base_vals = {f: float(station_row[f]) for f in selected_features if f in station_row.index}
+        actual = float(station_row["entry"])
+
+        record: dict = {
+            "Station": station_row["display_name"],
+            "Line Color": station_row.get("line_color", ""),
+            "Station Typology": station_row.get("station_typology", ""),
+            "Observed Ridership": round(actual),
+        }
+
+        total_delta_log_y = 0.0
+        indiv_pcts = []
+        for dim in ["Surface", "Shade", "Obstacle"]:
+            neg1_list = walk_neg1.get(dim, [])
+            if neg1_list:
+                dim_delta_log_y = 0.0
+                dim_pct_total = 0.0
+                for feat in neg1_list:
+                    base_val = base_vals.get(feat, 0.0)
+                    var_name = feat if model_spec == "linear" else f"log_{feat}"
+                    coef_row = coef_df[coef_df["variable"] == var_name]
+                    if coef_row.empty:
+                        continue
+                    coef_val = float(coef_row["coef"].values[0])
+                    if model_spec == "log-log":
+                        dl = _delta_log_y(coef_val, base_val, 0.0, log_offset)
+                        dim_delta_log_y += dl
+                    else:
+                        dim_pct_total += _approx_delta_pct_y(
+                            coef_val, base_val, 0.0,
+                            actual, log_offset, model_spec,
+                        )
+                if model_spec == "log-log":
+                    dim_pct = (np.exp(dim_delta_log_y) - 1) * 100
+                    approx_riders = actual * dim_pct / 100
+                    total_delta_log_y += dim_delta_log_y
+                else:
+                    dim_pct = dim_pct_total
+                    approx_riders = actual * dim_pct_total / 100
+                    indiv_pcts.append(dim_pct_total)
+                record[f"Δ {dim} (%)"] = round(dim_pct, 1)
+                record[f"Δ {dim} (riders)"] = round(approx_riders)
+            else:
+                record[f"Δ {dim} (%)"] = "—"
+                record[f"Δ {dim} (riders)"] = "—"
+
+        if model_spec == "log-log":
+            combined_pct = (np.exp(total_delta_log_y) - 1) * 100
+        else:
+            combined_pct = sum(indiv_pcts)
+        approx_combined_riders = actual * combined_pct / 100
+        combined_walkability = round(approx_combined_riders)
+        record["Δ Combined Walkability (%)"] = round(combined_pct, 1)
+        record["Δ Combined Walkability (riders)"] = combined_walkability
+
+        # Proposed SW development
+        if has_sw_dev:
+            line_code = station_row.get("line_code", "")
+            delta_sw = sw_dev_map.get(line_code, 0.0)
+            record["Proposed SW (m)"] = round(delta_sw)
+            sw_dev_riders = 0
+            sw_delta_log = 0.0
+            if delta_sw > 0:
+                sw_base = base_vals.get("sw_total_length", 0.0)
+                var_name = "sw_total_length" if model_spec == "linear" else "log_sw_total_length"
+                cr = coef_df[coef_df["variable"] == var_name]
+                if not cr.empty:
+                    beta = float(cr["coef"].values[0])
+                    if model_spec == "log-log":
+                        sw_delta_log = _delta_log_y(beta, sw_base, sw_base + delta_sw, log_offset)
+                        sw_dev_riders = round(actual * ((np.exp(sw_delta_log) - 1) * 100) / 100)
+                    else:
+                        sw_pct = _approx_delta_pct_y(
+                            beta, sw_base, sw_base + delta_sw,
+                            actual, log_offset, model_spec,
+                        )
+                        sw_dev_riders = round(actual * sw_pct / 100)
+            sw_pct_val = sw_dev_riders / actual * 100 if actual > 0 else 0.0
+            record["Δ SW Dev (%)"] = round(sw_pct_val, 1)
+            record["Δ SW Dev (riders)"] = sw_dev_riders
+            if model_spec == "log-log":
+                total_delta_log = total_delta_log_y + sw_delta_log
+                total_pct = (np.exp(total_delta_log) - 1) * 100
+                record["Δ Total (%)"] = round(total_pct, 1)
+                record["Δ Total (riders)"] = round(actual * total_pct / 100)
+            else:
+                total_riders = combined_walkability + sw_dev_riders
+                total_pct = total_riders / actual * 100 if actual > 0 else 0.0
+                record["Δ Total (%)"] = round(total_pct, 1)
+                record["Δ Total (riders)"] = total_riders
+
+        rows.append(record)
+
+    result_df = pd.DataFrame(rows)
+    result_df = result_df.sort_values(sort_col_label)
+
+    st.dataframe(result_df, use_container_width=True, hide_index=True, height=500)
+
+    _policy_download(result_df, "observed")
+
+    # Calculation detail
+    st.markdown("---")
+    station_names = sorted(df["display_name"].tolist())
+    sel = st.selectbox("Show calculation for station:", station_names, key="observed_calc_station")
+    sel_row = df[df["display_name"] == sel].iloc[0]
+    _show_observed_calculation(sel_row, coef_df, selected_features, walk_neg1, log_offset, model_spec)
+
+
+# ── Tab 7: Policy Comparison Plot ────────────────────────────────────────
 
 def render_policy_plot(
     df: pd.DataFrame, coef_df: pd.DataFrame,
@@ -1740,7 +2019,8 @@ def main() -> None:
     )
 
     tabs = ["Model Results", "Station Explorer", "What-if Simulator",
-            "Policy (Exact)", "Policy (Elasticity Approx.)", "Policy Plot"]
+            "Policy (Exact)", "Policy (Elasticity Approx.)",
+            "Policy (Observed Base)", "Policy Plot"]
     if has_radii:
         tabs.append("Buffer Sensitivity")
     tab_objs = st.tabs(tabs)
@@ -1756,9 +2036,11 @@ def main() -> None:
     with tab_objs[4]:
         render_policy_approx(df, coef_df, selected_features, log_offset, model_spec, sw_dev_map=sw_dev_map)
     with tab_objs[5]:
+        render_policy_observed(df, coef_df, selected_features, log_offset, model_spec, sw_dev_map=sw_dev_map)
+    with tab_objs[6]:
         render_policy_plot(df, coef_df, selected_features, log_offset, model_spec, sw_dev_map=sw_dev_map)
-    if has_radii and len(tab_objs) > 6:
-        with tab_objs[6]:
+    if has_radii and len(tab_objs) > 7:
+        with tab_objs[7]:
             render_buffer_sensitivity(
                 df_radii, selected_features, sel_stations,
                 log_offset, sig_level, model_spec,
