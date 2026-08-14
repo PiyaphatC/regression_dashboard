@@ -1010,29 +1010,29 @@ def render_policy_exact(
             "Proposed SW (m)": round(delta_sw),
         }
 
-        # Δ Surface: set surface_neg1 → 0
+        # Upgrade Surface: set surface_neg1 → 0
         if surface_neg1_list:
             sc = _build_scenario_vals(base_vals, surface_neg1_list, surface_zero_list, station_row)
             chg = predict_ridership(coef_df, sc, log_offset, model_spec) - base_pred
-            record["Δ Surface (riders)"] = round(chg)
+            record["Upgrade Surface (riders)"] = round(chg)
         else:
-            record["Δ Surface (riders)"] = 0
+            record["Upgrade Surface (riders)"] = 0
 
-        # Δ Shade: set shade_neg1 → 0
+        # Upgrade Shade: set shade_neg1 → 0
         if shade_neg1_list:
             sc = _build_scenario_vals(base_vals, shade_neg1_list, shade_zero_list, station_row)
             chg = predict_ridership(coef_df, sc, log_offset, model_spec) - base_pred
-            record["Δ Shade (riders)"] = round(chg)
+            record["Upgrade Shade (riders)"] = round(chg)
         else:
-            record["Δ Shade (riders)"] = 0
+            record["Upgrade Shade (riders)"] = 0
 
-        # Δ Proposed SW: add proposed sidewalk length
+        # Add Proposed SW: add proposed sidewalk length
         sw_chg = 0
         if has_sw_dev and delta_sw > 0:
             sw_sc = dict(base_vals)
             sw_sc["sw_total_length"] = base_vals.get("sw_total_length", 0.0) + delta_sw
             sw_chg = round(predict_ridership(coef_df, sw_sc, log_offset, model_spec) - base_pred)
-        record["Δ Proposed SW (riders)"] = sw_chg
+        record["Add Proposed SW (riders)"] = sw_chg
 
         # Combined: surface_neg1→0 + shade_neg1→0 + proposed SW, all at once
         combined_neg1 = surface_neg1_list + shade_neg1_list
@@ -1043,7 +1043,7 @@ def render_policy_exact(
                 "sw_total_length", base_vals.get("sw_total_length", 0.0)
             ) + delta_sw
         combined_chg = predict_ridership(coef_df, combined_sc, log_offset, model_spec) - base_pred
-        record["Δ Combined (riders)"] = round(combined_chg)
+        record["All Upgrades Combined (riders)"] = round(combined_chg)
 
         rows.append(record)
 
@@ -1157,35 +1157,16 @@ def _show_approx_calculation(
         )
 
 
-def _calc_delta_riders_elasticity(
-    coef_df: pd.DataFrame, feat_list: list[str],
-    base_vals: dict[str, float], new_val: float,
-    actual: float, log_offset: float, model_spec: str,
-) -> float:
-    """Compute Δ riders using elasticity (Δlog(y)) applied to actual ridership."""
-    if model_spec == "log-log":
-        total_dl = 0.0
-        for feat in feat_list:
-            bv = base_vals.get(feat, 0.0)
-            vn = f"log_{feat}"
-            cr = coef_df[coef_df["variable"] == vn]
-            if cr.empty:
-                continue
-            total_dl += _delta_log_y(float(cr["coef"].values[0]), bv, new_val, log_offset)
-        return actual * ((np.exp(total_dl) - 1) * 100) / 100
-    else:
-        total_pct = 0.0
-        for feat in feat_list:
-            bv = base_vals.get(feat, 0.0)
-            vn = feat if model_spec == "linear" else f"log_{feat}"
-            cr = coef_df[coef_df["variable"] == vn]
-            if cr.empty:
-                continue
-            total_pct += _approx_delta_pct_y(
-                float(cr["coef"].values[0]), bv, new_val,
-                actual, log_offset, model_spec,
-            )
-        return actual * total_pct / 100
+def _elasticity_pct(coef_df: pd.DataFrame, feat: str, base_val: float,
+                    new_val: float, model_spec: str) -> float:
+    """Simple elasticity: Δ%y = β × Δ%x.  Works for any model spec."""
+    vn = feat if model_spec == "linear" else f"log_{feat}"
+    cr = coef_df[coef_df["variable"] == vn]
+    if cr.empty or base_val == 0:
+        return 0.0
+    beta = float(cr["coef"].values[0])
+    pct_x = (new_val - base_val) / base_val * 100
+    return beta * pct_x
 
 
 def render_policy_approx(
@@ -1196,8 +1177,9 @@ def render_policy_approx(
 ) -> None:
     st.subheader("Policy Recommendation — Elasticity")
     st.caption(
-        "Same scenarios as the Exact tab, but uses **model coefficients × observed ridership** "
-        "to estimate rider changes instead of re-running the full prediction equation."
+        "Elasticity approximation: **Δ%y = β × Δ%x**. "
+        "A 1% change in x leads to a β% change in ridership. "
+        "Rider changes are applied to **observed ridership**."
     )
 
     walk_neg1 = _find_walk_vars(selected_features)
@@ -1236,69 +1218,33 @@ def render_policy_approx(
             "Proposed SW (m)": round(delta_sw),
         }
 
-        # Δ Surface: coefficient applied to actual ridership
-        surface_dl = 0.0
-        surface_chg = 0.0
-        if surface_neg1_list:
-            if model_spec == "log-log":
-                for feat in surface_neg1_list:
-                    bv = base_vals.get(feat, 0.0)
-                    cr = coef_df[coef_df["variable"] == f"log_{feat}"]
-                    if not cr.empty:
-                        surface_dl += _delta_log_y(float(cr["coef"].values[0]), bv, 0.0, log_offset)
-                surface_chg = actual * ((np.exp(surface_dl) - 1) * 100) / 100
-            else:
-                surface_chg = _calc_delta_riders_elasticity(
-                    coef_df, surface_neg1_list, base_vals, 0.0,
-                    actual, log_offset, model_spec,
-                )
-        record["Δ Surface (riders)"] = round(surface_chg)
+        # Upgrade Surface: β × Δ%x × actual
+        surface_pct = 0.0
+        for feat in surface_neg1_list:
+            surface_pct += _elasticity_pct(coef_df, feat, base_vals.get(feat, 0.0), 0.0, model_spec)
+        surface_chg = actual * surface_pct / 100
+        record["Upgrade Surface (riders)"] = round(surface_chg)
 
-        # Δ Shade: coefficient applied to actual ridership
-        shade_dl = 0.0
-        shade_chg = 0.0
-        if shade_neg1_list:
-            if model_spec == "log-log":
-                for feat in shade_neg1_list:
-                    bv = base_vals.get(feat, 0.0)
-                    cr = coef_df[coef_df["variable"] == f"log_{feat}"]
-                    if not cr.empty:
-                        shade_dl += _delta_log_y(float(cr["coef"].values[0]), bv, 0.0, log_offset)
-                shade_chg = actual * ((np.exp(shade_dl) - 1) * 100) / 100
-            else:
-                shade_chg = _calc_delta_riders_elasticity(
-                    coef_df, shade_neg1_list, base_vals, 0.0,
-                    actual, log_offset, model_spec,
-                )
-        record["Δ Shade (riders)"] = round(shade_chg)
+        # Upgrade Shade: β × Δ%x × actual
+        shade_pct = 0.0
+        for feat in shade_neg1_list:
+            shade_pct += _elasticity_pct(coef_df, feat, base_vals.get(feat, 0.0), 0.0, model_spec)
+        shade_chg = actual * shade_pct / 100
+        record["Upgrade Shade (riders)"] = round(shade_chg)
 
-        # Δ Proposed SW: coefficient applied to actual ridership
-        sw_dl = 0.0
+        # Add Proposed SW: β × Δ%x × actual
+        sw_pct = 0.0
         sw_chg = 0.0
         if has_sw_dev and delta_sw > 0:
             sw_base = base_vals.get("sw_total_length", 0.0)
-            vn = "sw_total_length" if model_spec == "linear" else "log_sw_total_length"
-            cr = coef_df[coef_df["variable"] == vn]
-            if not cr.empty:
-                beta = float(cr["coef"].values[0])
-                if model_spec == "log-log":
-                    sw_dl = _delta_log_y(beta, sw_base, sw_base + delta_sw, log_offset)
-                    sw_chg = actual * ((np.exp(sw_dl) - 1) * 100) / 100
-                else:
-                    sw_pct = _approx_delta_pct_y(
-                        beta, sw_base, sw_base + delta_sw,
-                        actual, log_offset, model_spec,
-                    )
-                    sw_chg = actual * sw_pct / 100
-        record["Δ Proposed SW (riders)"] = round(sw_chg)
+            sw_pct = _elasticity_pct(coef_df, "sw_total_length", sw_base, sw_base + delta_sw, model_spec)
+            sw_chg = actual * sw_pct / 100
+        record["Add Proposed SW (riders)"] = round(sw_chg)
 
-        # Combined: sum Δlog(y) in log space, then apply to actual ridership
-        if model_spec == "log-log":
-            combined_dl = surface_dl + shade_dl + sw_dl
-            combined_chg = actual * ((np.exp(combined_dl) - 1) * 100) / 100
-        else:
-            combined_chg = surface_chg + shade_chg + sw_chg
-        record["Δ Combined (riders)"] = round(combined_chg)
+        # Combined: sum of Δ%y (additive in elasticity approximation)
+        combined_pct = surface_pct + shade_pct + sw_pct
+        combined_chg = actual * combined_pct / 100
+        record["All Upgrades Combined (riders)"] = round(combined_chg)
 
         rows.append(record)
 
@@ -1308,13 +1254,6 @@ def render_policy_approx(
     st.dataframe(result_df, use_container_width=True, hide_index=True, height=500)
 
     _policy_download(result_df, "approx")
-
-    # Calculation detail
-    st.markdown("---")
-    station_names = sorted(df["display_name"].tolist())
-    sel = st.selectbox("Show calculation for station:", station_names, key="approx_calc_station")
-    sel_row = df[df["display_name"] == sel].iloc[0]
-    _show_approx_calculation(sel_row, coef_df, selected_features, walk_neg1, log_offset, model_spec)
 
 
 # ── Tab 6: Policy (Observed Base) ────────────────────────────────────────
