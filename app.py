@@ -15,7 +15,6 @@ import streamlit as st
 from model import (
     ModelResult,
     build_equation_str,
-    elasticity_impact,
     fit_iv_model,
     fit_linear_model,
     fit_model,
@@ -730,11 +729,11 @@ def render_whatif(df: pd.DataFrame, coef_df: pd.DataFrame,
 
     st.subheader("Elasticity Impact per Feature")
     if model_spec == "log-log":
-        st.caption("α_i × Δ%X_i — point elasticity approximation per feature.")
+        st.caption("Δ%y = (exp(β × Δlog(x+c)) − 1) × 100 per feature.")
     elif model_spec == "semi-log":
-        st.caption("Point elasticity (β_i / ŷ) × Δ%X_i — evaluated at base station values.")
+        st.caption("Δ%y = β × Δlog(x+c) / y × 100 per feature.")
     else:
-        st.caption("Point elasticity (β_i × x_i / ŷ) × Δ%X_i — evaluated at base station values.")
+        st.caption("Δ%y = β × Δx / y × 100 per feature.")
     impact_rows = []
     for feat in selected_features:
         base_val = base_feat_vals.get(feat, 0.0)
@@ -744,20 +743,13 @@ def render_whatif(df: pd.DataFrame, coef_df: pd.DataFrame,
         if coef_row.empty:
             continue
         coef_val = float(coef_row["coef"].values[0])
-        if model_spec == "log-log":
-            elasticity = coef_val                                        # α already is elasticity
-        elif model_spec == "semi-log":
-            elasticity = coef_val / (base_pred + 1e-9)                  # β / ŷ
-        else:  # linear
-            elasticity = coef_val * base_val / (base_pred + 1e-9)       # β · x / ŷ
-        pct_x = (new_val - base_val) / (base_val + 1e-9) * 100
+        delta_pct_y = _approx_delta_pct_y(coef_val, base_val, new_val, base_pred, log_offset, model_spec)
         impact_rows.append({
             "Feature":               feat,
             "Base value":            base_val,
             "New value":             new_val,
-            "Δ% feature":            round(pct_x, 1),
-            "Elasticity":            round(elasticity, 4),
-            "Expected Δ% ridership": round(elasticity_impact(elasticity, pct_x), 2),
+            "β":                     round(coef_val, 4),
+            "Δ% ridership":          round(delta_pct_y, 2),
         })
     st.dataframe(pd.DataFrame(impact_rows), use_container_width=True, hide_index=True)
 
@@ -820,6 +812,19 @@ def _build_scenario_vals(
     return new
 
 
+def _delta_log_y(
+    coef_val: float, base_val: float, new_val: float,
+    log_offset: float,
+) -> float:
+    """Return Δlog(y) = β × Δlog(x+c) for a single feature change (log-log only).
+
+    These values are additive in log space and can be summed across features
+    before converting to Δ%y via (exp(Σ Δlog(y)) − 1) × 100.
+    """
+    delta_log_x = np.log(new_val + log_offset) - np.log(base_val + log_offset)
+    return coef_val * delta_log_x
+
+
 def _approx_delta_pct_y(
     coef_val: float, base_val: float, new_val: float,
     base_pred: float, log_offset: float, model_spec: str,
@@ -833,8 +838,7 @@ def _approx_delta_pct_y(
     where Δlog(x+c) = ln(x_new + c) − ln(x_old + c)
     """
     if model_spec == "log-log":
-        delta_log_x = np.log(new_val + log_offset) - np.log(base_val + log_offset)
-        return (np.exp(coef_val * delta_log_x) - 1) * 100
+        return (np.exp(_delta_log_y(coef_val, base_val, new_val, log_offset)) - 1) * 100
     elif model_spec == "semi-log":
         delta_log_x = np.log(new_val + log_offset) - np.log(base_val + log_offset)
         return coef_val * delta_log_x / (base_pred + 1e-9) * 100
@@ -1020,7 +1024,11 @@ def render_policy_exact(
                 sw_new_pred = predict_ridership(coef_df, sw_scenario, log_offset, model_spec)
                 sw_dev_riders = round(sw_new_pred - base_pred)
             record["Δ SW Dev (riders)"] = sw_dev_riders
-            record["Δ Total (riders)"] = round(combined_chg) + sw_dev_riders
+            # Total: apply walkability + SW dev simultaneously
+            total_scenario = dict(combined)
+            total_scenario["sw_total_length"] = combined.get("sw_total_length", base_vals.get("sw_total_length", 0.0)) + delta_sw
+            total_pred = predict_ridership(coef_df, total_scenario, log_offset, model_spec)
+            record["Δ Total (riders)"] = round(total_pred - base_pred)
 
         rows.append(record)
 
@@ -1052,7 +1060,8 @@ def _show_approx_calculation(
     base_pred = predict_ridership(coef_df, base_vals, log_offset, model_spec)
     st.markdown(f"**Base predicted ridership = {base_pred:,.1f}**")
 
-    indiv_pcts = []
+    indiv_pcts = []       # for semi-log / linear display
+    indiv_delta_logs = [] # for log-log: (dim, Δlog(y))
     for dim in ["Surface", "Shade", "Obstacle"]:
         neg1_list = walk_neg1.get(dim, [])
         if not neg1_list:
@@ -1064,15 +1073,15 @@ def _show_approx_calculation(
         if cr.empty:
             continue
         beta = float(cr["coef"].values[0])
-        dim_pct = _approx_delta_pct_y(beta, x_old, 0.0, base_pred, log_offset, model_spec)
-        approx_riders = base_pred * dim_pct / 100
-        indiv_pcts.append((dim, dim_pct))
 
         if model_spec == "log-log":
             log_old = np.log(x_old + c)
             log_new = np.log(0.0 + c)
             delta_log = log_new - log_old
             delta_log_y = beta * delta_log
+            dim_pct = (np.exp(delta_log_y) - 1) * 100
+            approx_riders = base_pred * dim_pct / 100
+            indiv_delta_logs.append((dim, delta_log_y))
             st.markdown(
                 f"**Δ {dim}:** `{feat}` = {x_old:.1f} → 0  \n"
                 f"β = {beta:+.4f}, c = {c}  \n"
@@ -1085,33 +1094,52 @@ def _show_approx_calculation(
             log_old = np.log(x_old + c)
             log_new = np.log(0.0 + c)
             delta_log = log_new - log_old
+            dim_pct = _approx_delta_pct_y(beta, x_old, 0.0, base_pred, log_offset, model_spec)
+            approx_riders = base_pred * dim_pct / 100
+            indiv_pcts.append((dim, dim_pct))
             st.markdown(
                 f"**Δ {dim}:** `{feat}` = {x_old:.1f} → 0  \n"
                 f"β = {beta:+.4f}, c = {c}  \n"
                 f"Δlog(x+c) = ln(0+{c}) − ln({x_old:.1f}+{c}) = {log_new:.4f} − {log_old:.4f} = {delta_log:+.4f}  \n"
-                f"Δ%y ≈ β × Δlog(x+c) / y × 100  \n"
+                f"Δ%y = β × Δlog(x+c) / y × 100  \n"
                 f"= {beta:.4f} × ({delta_log:+.4f}) / {base_pred:.0f} × 100 = {dim_pct:+.4f}%  \n"
                 f"**Δ riders = {base_pred:,.0f} × {dim_pct:.4f}% = {approx_riders:+,.0f}**"
             )
         else:
             delta_x = 0 - x_old
+            dim_pct = _approx_delta_pct_y(beta, x_old, 0.0, base_pred, log_offset, model_spec)
+            approx_riders = base_pred * dim_pct / 100
+            indiv_pcts.append((dim, dim_pct))
             st.markdown(
                 f"**Δ {dim}:** `{feat}` = {x_old:.1f} → 0  \n"
                 f"β = {beta:+.4f}  \n"
-                f"Δ%y ≈ β × Δx / y × 100  \n"
+                f"Δ%y = β × Δx / y × 100  \n"
                 f"= {beta:.4f} × ({delta_x:.1f}) / {base_pred:.0f} × 100 = {dim_pct:+.4f}%  \n"
                 f"**Δ riders = {base_pred:,.0f} × {dim_pct:.4f}% = {approx_riders:+,.0f}**"
             )
 
     # Combined
-    sum_pct = sum(p for _, p in indiv_pcts)
-    combined_riders = base_pred * sum_pct / 100
-    parts = " + ".join(f"{p:+.4f}%" for _, p in indiv_pcts)
-    st.markdown(
-        f"**Δ Combined:** sum of individual Δ%  \n"
-        f"Σ Δ% = {parts} = {sum_pct:+.4f}%  \n"
-        f"**Δ riders = {base_pred:,.0f} × {sum_pct:.4f}% = {combined_riders:+,.0f}**"
-    )
+    if model_spec == "log-log":
+        # Additive in log space: sum Δlog(y), then exp once
+        total_delta_log = sum(dl for _, dl in indiv_delta_logs)
+        combined_pct = (np.exp(total_delta_log) - 1) * 100
+        combined_riders = base_pred * combined_pct / 100
+        parts = " + ".join(f"{dl:+.4f}" for _, dl in indiv_delta_logs)
+        st.markdown(
+            f"**Δ Combined:** sum Δlog(y) in log space, then convert  \n"
+            f"Σ Δlog(y) = {parts} = {total_delta_log:+.4f}  \n"
+            f"Δ%y = (e^{{{total_delta_log:+.4f}}} − 1) × 100 = {combined_pct:+.4f}%  \n"
+            f"**Δ riders = {base_pred:,.0f} × {combined_pct:.4f}% = {combined_riders:+,.0f}**"
+        )
+    else:
+        sum_pct = sum(p for _, p in indiv_pcts)
+        combined_riders = base_pred * sum_pct / 100
+        parts = " + ".join(f"{p:+.4f}%" for _, p in indiv_pcts)
+        st.markdown(
+            f"**Δ Combined:** sum of individual Δ%  \n"
+            f"Σ Δ% = {parts} = {sum_pct:+.4f}%  \n"
+            f"**Δ riders = {base_pred:,.0f} × {sum_pct:.4f}% = {combined_riders:+,.0f}**"
+        )
 
 
 def render_policy_approx(
@@ -1151,10 +1179,12 @@ def render_policy_approx(
             "Base Ridership": round(base_pred),
         }
 
-        indiv_pcts = []
+        total_delta_log_y = 0.0  # accumulate Δlog(y) across all dims (log-log)
+        indiv_pcts = []          # for semi-log / linear (additive in y)
         for dim in ["Surface", "Shade", "Obstacle"]:
             neg1_list = walk_neg1.get(dim, [])
             if neg1_list:
+                dim_delta_log_y = 0.0
                 dim_pct_total = 0.0
                 for feat in neg1_list:
                     base_val = base_vals.get(feat, 0.0)
@@ -1163,18 +1193,30 @@ def render_policy_approx(
                     if coef_row.empty:
                         continue
                     coef_val = float(coef_row["coef"].values[0])
-                    dim_pct_total += _approx_delta_pct_y(
-                        coef_val, base_val, 0.0,
-                        base_pred, log_offset, model_spec,
-                    )
-                approx_riders = base_pred * dim_pct_total / 100
+                    if model_spec == "log-log":
+                        dl = _delta_log_y(coef_val, base_val, 0.0, log_offset)
+                        dim_delta_log_y += dl
+                    else:
+                        dim_pct_total += _approx_delta_pct_y(
+                            coef_val, base_val, 0.0,
+                            base_pred, log_offset, model_spec,
+                        )
+                if model_spec == "log-log":
+                    dim_pct = (np.exp(dim_delta_log_y) - 1) * 100
+                    approx_riders = base_pred * dim_pct / 100
+                    total_delta_log_y += dim_delta_log_y
+                else:
+                    approx_riders = base_pred * dim_pct_total / 100
+                    indiv_pcts.append(dim_pct_total)
                 record[f"Δ {dim} (riders)"] = round(approx_riders)
-                indiv_pcts.append(dim_pct_total)
             else:
                 record[f"Δ {dim} (riders)"] = "—"
 
-        sum_pct = sum(indiv_pcts)
-        approx_combined_riders = base_pred * sum_pct / 100
+        if model_spec == "log-log":
+            combined_pct = (np.exp(total_delta_log_y) - 1) * 100
+        else:
+            combined_pct = sum(indiv_pcts)
+        approx_combined_riders = base_pred * combined_pct / 100
         combined_walkability = round(approx_combined_riders)
         record["Δ Combined Walkability (riders)"] = combined_walkability
 
@@ -1184,19 +1226,29 @@ def render_policy_approx(
             delta_sw = sw_dev_map.get(line_code, 0.0)
             record["Proposed SW (m)"] = round(delta_sw)
             sw_dev_riders = 0
+            sw_delta_log = 0.0
             if delta_sw > 0:
                 sw_base = base_vals.get("sw_total_length", 0.0)
                 var_name = "sw_total_length" if model_spec == "linear" else "log_sw_total_length"
                 cr = coef_df[coef_df["variable"] == var_name]
                 if not cr.empty:
                     beta = float(cr["coef"].values[0])
-                    sw_pct = _approx_delta_pct_y(
-                        beta, sw_base, sw_base + delta_sw,
-                        base_pred, log_offset, model_spec,
-                    )
-                    sw_dev_riders = round(base_pred * sw_pct / 100)
+                    if model_spec == "log-log":
+                        sw_delta_log = _delta_log_y(beta, sw_base, sw_base + delta_sw, log_offset)
+                        sw_dev_riders = round(base_pred * ((np.exp(sw_delta_log) - 1) * 100) / 100)
+                    else:
+                        sw_pct = _approx_delta_pct_y(
+                            beta, sw_base, sw_base + delta_sw,
+                            base_pred, log_offset, model_spec,
+                        )
+                        sw_dev_riders = round(base_pred * sw_pct / 100)
             record["Δ SW Dev (riders)"] = sw_dev_riders
-            record["Δ Total (riders)"] = combined_walkability + sw_dev_riders
+            if model_spec == "log-log":
+                total_delta_log = total_delta_log_y + sw_delta_log
+                total_pct = (np.exp(total_delta_log) - 1) * 100
+                record["Δ Total (riders)"] = round(base_pred * total_pct / 100)
+            else:
+                record["Δ Total (riders)"] = combined_walkability + sw_dev_riders
 
         rows.append(record)
 
@@ -1270,6 +1322,7 @@ def render_policy_plot(
         line_code = row.get("line_code", "")
         delta_sw = sw_dev_map.get(line_code, 0.0) if has_sw_dev else 0.0
         sw_exact_chg = 0.0
+        sw_approx_delta_log = 0.0
         sw_approx_chg = 0.0
         if has_sw_dev and delta_sw > 0:
             sw_sc = dict(base_vals)
@@ -1279,12 +1332,20 @@ def render_policy_plot(
             cr = coef_df[coef_df["variable"] == var_name]
             if not cr.empty:
                 beta = float(cr["coef"].values[0])
-                sw_pct = _approx_delta_pct_y(
-                    beta, base_vals.get("sw_total_length", 0.0),
-                    base_vals.get("sw_total_length", 0.0) + delta_sw,
-                    base_pred, log_offset, model_spec,
-                )
-                sw_approx_chg = base_pred * sw_pct / 100
+                if model_spec == "log-log":
+                    sw_approx_delta_log = _delta_log_y(
+                        beta, base_vals.get("sw_total_length", 0.0),
+                        base_vals.get("sw_total_length", 0.0) + delta_sw,
+                        log_offset,
+                    )
+                    sw_approx_chg = base_pred * ((np.exp(sw_approx_delta_log) - 1) * 100) / 100
+                else:
+                    sw_pct = _approx_delta_pct_y(
+                        beta, base_vals.get("sw_total_length", 0.0),
+                        base_vals.get("sw_total_length", 0.0) + delta_sw,
+                        base_pred, log_offset, model_spec,
+                    )
+                    sw_approx_chg = base_pred * sw_pct / 100
 
         # ── Helper: Combined Walkability exact & elasticity ──
         all_neg1 = [v for vlist in walk_neg1.values() for v in vlist]
@@ -1292,7 +1353,8 @@ def render_policy_plot(
         combined_sc = _build_scenario_vals(base_vals, all_neg1, all_zero, row)
         combined_exact_chg = predict_ridership(coef_df, combined_sc, log_offset, model_spec) - base_pred
 
-        walk_approx_pct = 0.0
+        walk_total_delta_log = 0.0
+        walk_total_pct = 0.0
         for td in [d for d in dims if d in walk_neg1]:
             for feat in walk_neg1.get(td, []):
                 bv = base_vals.get(feat, 0.0)
@@ -1300,11 +1362,20 @@ def render_policy_plot(
                 cr2 = coef_df[coef_df["variable"] == vn]
                 if cr2.empty:
                     continue
-                walk_approx_pct += _approx_delta_pct_y(
-                    float(cr2["coef"].values[0]), bv, 0.0,
-                    base_pred, log_offset, model_spec,
-                )
-        combined_approx_chg = base_pred * walk_approx_pct / 100
+                if model_spec == "log-log":
+                    walk_total_delta_log += _delta_log_y(
+                        float(cr2["coef"].values[0]), bv, 0.0, log_offset,
+                    )
+                else:
+                    walk_total_pct += _approx_delta_pct_y(
+                        float(cr2["coef"].values[0]), bv, 0.0,
+                        base_pred, log_offset, model_spec,
+                    )
+        if model_spec == "log-log":
+            walk_combined_pct = (np.exp(walk_total_delta_log) - 1) * 100
+        else:
+            walk_combined_pct = walk_total_pct
+        combined_approx_chg = base_pred * walk_combined_pct / 100
 
         # ── Select scenario values ──
         if scenario == "Δ Combined Walkability":
@@ -1314,25 +1385,43 @@ def render_policy_plot(
             exact_chg = sw_exact_chg
             approx_chg = sw_approx_chg
         elif scenario == "Δ Total":
-            exact_chg = combined_exact_chg + sw_exact_chg
-            approx_chg = combined_approx_chg + sw_approx_chg
+            # Apply walkability + SW dev simultaneously
+            total_sc = dict(combined_sc)
+            total_sc["sw_total_length"] = combined_sc.get("sw_total_length", base_vals.get("sw_total_length", 0.0)) + delta_sw
+            exact_chg = predict_ridership(coef_df, total_sc, log_offset, model_spec) - base_pred
+            if model_spec == "log-log":
+                total_delta_log = walk_total_delta_log + sw_approx_delta_log
+                total_pct = (np.exp(total_delta_log) - 1) * 100
+                approx_chg = base_pred * total_pct / 100
+            else:
+                approx_chg = combined_approx_chg + sw_approx_chg
         else:
             dim = scenario.replace("Δ ", "")
             neg1_list = walk_neg1.get(dim, [])
             zero_list = walk_zero.get(dim, [])
             sc_vals = _build_scenario_vals(base_vals, neg1_list, zero_list, row)
             exact_chg = predict_ridership(coef_df, sc_vals, log_offset, model_spec) - base_pred
-            approx_chg_pct = 0.0
-            for feat in neg1_list:
-                bv = base_vals.get(feat, 0.0)
-                vn = feat if model_spec == "linear" else f"log_{feat}"
-                cr3 = coef_df[coef_df["variable"] == vn]
-                if not cr3.empty:
-                    approx_chg_pct += _approx_delta_pct_y(
-                        float(cr3["coef"].values[0]), bv, 0.0,
-                        base_pred, log_offset, model_spec,
-                    )
-            approx_chg = base_pred * approx_chg_pct / 100
+            if model_spec == "log-log":
+                dim_delta_log = 0.0
+                for feat in neg1_list:
+                    bv = base_vals.get(feat, 0.0)
+                    vn = f"log_{feat}"
+                    cr3 = coef_df[coef_df["variable"] == vn]
+                    if not cr3.empty:
+                        dim_delta_log += _delta_log_y(float(cr3["coef"].values[0]), bv, 0.0, log_offset)
+                approx_chg = base_pred * ((np.exp(dim_delta_log) - 1) * 100) / 100
+            else:
+                approx_chg_pct = 0.0
+                for feat in neg1_list:
+                    bv = base_vals.get(feat, 0.0)
+                    vn = feat if model_spec == "linear" else f"log_{feat}"
+                    cr3 = coef_df[coef_df["variable"] == vn]
+                    if not cr3.empty:
+                        approx_chg_pct += _approx_delta_pct_y(
+                            float(cr3["coef"].values[0]), bv, 0.0,
+                            base_pred, log_offset, model_spec,
+                        )
+                approx_chg = base_pred * approx_chg_pct / 100
 
         exact_pct = exact_chg / base_pred * 100 if base_pred > 0 else 0.0
         approx_pct_total = approx_chg / base_pred * 100 if base_pred > 0 else 0.0
