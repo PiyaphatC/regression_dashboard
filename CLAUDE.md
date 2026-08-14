@@ -11,17 +11,28 @@ Log-log OLS regression of Bangkok rail station ridership (daily entries) against
 - **Ridership source:** `Output/ridership_raw.xlsx`
 
 ## Current Best Model
-**R² = 0.4328 | R²_adj = 0.4114 | n = 193 | OLS with HC3 robust SE**
+**R² = 0.5002 | R²_adj = 0.4485 | n = 193 | 18 variables | OLS with HC3 robust SE**
 
 | Variable | Role | Expected sign | Coef | p |
 |---|---|---|---|---|
-| `surface_pct_1` | Sidewalk surface quality (%) | + | +0.1771 | 0.058 . |
-| `shade_pct_1` | Sidewalk shade (%) | + | +0.0501 | 0.302 |
-| `obs_pct_1` | Obstacle-free sidewalk (%) | + | +0.0529 | 0.489 |
-| `win_count` | Motorcycle taxi stops | + | +0.5710 | <0.001 *** |
-| `bike_share_count` | Bike share stations | + | +0.6215 | <0.001 *** |
-| `taxi_count` | Taxi stands | + | +0.5963 | <0.001 *** |
-| `bus_stop_mean_dist` | Mean distance to bus stops (m) | − | −0.0557 | 0.289 |
+| `bus_stop_count` | Bus stops | + | −0.0582 | 0.765 |
+| `win_count` | Motorcycle taxi stops | + | +0.4362 | 0.001 ** |
+| `taxi_count` | Taxi stands | + | +0.6628 | 0.007 ** |
+| `park_ride_car_count` | Park & ride lots | + | −0.1383 | 0.450 |
+| `bike_parking_count` | Bike parking spots | + | −0.2283 | 0.098 . |
+| `bike_share_count` | Bike share stations | + | +0.5607 | 0.005 ** |
+| `bike_parking_mean_dist` | Mean dist to bike parking (m) | − | +0.1639 | 0.005 ** |
+| `bike_share_mean_dist` | Mean dist to bike share (m) | − | +0.0149 | 0.823 |
+| `bus_stop_mean_dist` | Mean dist to bus stops (m) | − | −0.0265 | 0.736 |
+| `taxi_mean_dist` | Mean dist to taxi stands (m) | − | −0.0156 | 0.818 |
+| `win_mean_dist` | Mean dist to motorcycle taxis (m) | − | +0.0446 | 0.456 |
+| `sw_total_length` | Total sidewalk length (m) | + | +0.3671 | 0.014 * |
+| `sidewalk_length_surface_neg1` | Poor-surface sidewalk (m) | − | −0.0756 | 0.023 * |
+| `sidewalk_length_shade_neg1` | Unshaded sidewalk (m) | − | −0.0634 | 0.013 * |
+| `sidewalk_length_obstacle_neg1` | Obstructed sidewalk (m) | − | +0.0031 | 0.909 |
+| `POP25` | Population (25km buffer) | + | +0.0724 | 0.678 |
+| `PRIM25` | Primary schools | + | +0.0364 | 0.738 |
+| `STU25` | Students | + | +0.0188 | 0.773 |
 
 This variable set is coded as `DEFAULT_FEATURES` in `app.py`.
 
@@ -50,6 +61,9 @@ Length columns (`sidewalk_length_surface_*`, `sidewalk_length_shade_*`, `sidewal
 
 ## Model Notes
 - All models use log-log specification: `log(y) ~ log(x + offset)` with offset = 1.0
-- `bus_stop_count` has a wrong-sign (negative) coefficient — use `bus_stop_mean_dist` instead if bus connectivity is needed
 - `win_count`, `bike_share_count`, `taxi_count` are the strongest predictors (last-mile feeders)
-- Shade and obstacle-free sidewalk are directionally correct but not statistically significant after controlling for feeder modes
+- `sw_total_length`, `sidewalk_length_surface_neg1`, `sidewalk_length_shade_neg1` are significant sidewalk variables
+- `bus_stop_count`, `park_ride_car_count`, `bike_parking_count` have wrong-sign (negative) coefficients
+- `bike_parking_mean_dist` has a wrong-sign (positive) coefficient
+- Socio-economic variables (`POP25`, `PRIM25`, `STU25`) are not significant but included for theoretical completeness
+- Dashboard has two Policy Recommendation tabs comparing exact prediction vs elasticity approximation for walkability upgrade scenarios
