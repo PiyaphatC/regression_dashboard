@@ -352,7 +352,7 @@ def build_sidebar(df: pd.DataFrame, radii_list: list[int] | None = None) -> tupl
         "Station typology", options=all_typologies, default=all_typologies, key="filter_typology",
     )
 
-    _EXCLUDE_DEFAULT = {"RN01 — กรุงเทพอภิวัฒน์", "RW01 — กรุงเทพอภิวัฒน์"}
+    _EXCLUDE_DEFAULT = {"RW01 — กรุงเทพอภิวัฒน์"}
     filtered_stations = df[
         df["station_type"].isin(sel_types)
         & df["line_color"].isin(sel_colors)
