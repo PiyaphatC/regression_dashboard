@@ -352,16 +352,18 @@ def build_sidebar(df: pd.DataFrame, radii_list: list[int] | None = None) -> tupl
         "Station typology", options=all_typologies, default=all_typologies, key="filter_typology",
     )
 
+    _EXCLUDE_DEFAULT = {"RN01 — กรุงเทพอภิวัฒน์", "RW01 — กรุงเทพอภิวัฒน์"}
     filtered_stations = df[
         df["station_type"].isin(sel_types)
         & df["line_color"].isin(sel_colors)
         & df["station_typology"].isin(sel_typologies)
     ]["display_name"].tolist()
+    default_stations = [s for s in filtered_stations if s not in _EXCLUDE_DEFAULT]
 
     sel_stations = st.sidebar.multiselect(
         "Stations",
         options=filtered_stations,
-        default=filtered_stations,
+        default=default_stations,
         key="filter_stations",
     )
     st.sidebar.caption(f"{len(sel_stations)} / {len(df)} stations selected")
