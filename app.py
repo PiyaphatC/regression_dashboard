@@ -531,7 +531,9 @@ def render_model_results(model_result: ModelResult, coef_df: pd.DataFrame,
 
     # ── Coefficient table ─────────────────────────────────────────────────
     st.subheader("Coefficient Summary")
-    tbl = coef_df[coef_df["variable"] != "const"].copy()
+    const_tbl = coef_df[coef_df["variable"] == "const"].copy()
+    feat_tbl = coef_df[coef_df["variable"] != "const"].copy()
+    tbl = pd.concat([const_tbl, feat_tbl], ignore_index=True)
     tbl = tbl[["variable", "coef", "se", "t", "p", "ci_lo", "ci_hi", "significant"]].copy()
     tbl.columns = ["Variable", "Coef", "Std Err", "t-stat", "p-value", "CI low (95%)", "CI high (95%)", "Significant"]
 
