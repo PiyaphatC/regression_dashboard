@@ -82,7 +82,7 @@ DEFAULT_FEATURES = [
 ]
 
 
-@st.cache_data
+@st.cache_data(ttl=300)
 def load_sw_dev(path: str = SW_DEV_PATH) -> dict[str, float]:
     """Load proposed sidewalk additions: {line_code: delta_meters}."""
     try:
@@ -93,7 +93,7 @@ def load_sw_dev(path: str = SW_DEV_PATH) -> dict[str, float]:
         return {}
 
 
-@st.cache_data
+@st.cache_data(ttl=300)
 def load_data(path: str = DATA_PATH) -> pd.DataFrame:
     df = pd.read_csv(path, encoding="utf-8-sig")
     df.columns = df.columns.str.replace("\ufeff", "", regex=False).str.strip()
@@ -105,7 +105,7 @@ def load_data(path: str = DATA_PATH) -> pd.DataFrame:
     return df
 
 
-@st.cache_data
+@st.cache_data(ttl=300)
 def load_radii_data(path: str = RADII_PATH) -> pd.DataFrame:
     """Load the pre-computed multi-radius feature CSV."""
     df = pd.read_csv(path, encoding="utf-8-sig")
