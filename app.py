@@ -531,11 +531,33 @@ def render_model_results(model_result: ModelResult, coef_df: pd.DataFrame,
 
     # ── Coefficient table ─────────────────────────────────────────────────
     st.subheader("Coefficient Summary")
+    _THAI_LABELS = {
+        "const": "ค่าคงที่",
+        "bus_stop_count": "จำนวนป้ายรถประจำทาง",
+        "win_count": "จำนวนวินมอเตอร์ไซค์รับจ้าง",
+        "taxi_count": "จำนวนจุดรถแท็กซี่",
+        "park_ride_car_count": "จำนวนที่จอดแล้วจร (รถยนต์)",
+        "bike_parking_count": "จำนวนที่จอดจักรยาน",
+        "bike_share_count": "จำนวนจุดจักรยานสาธารณะ",
+        "bike_parking_mean_dist": "ระยะทางเฉลี่ยถึงที่จอดจักรยาน",
+        "bike_share_mean_dist": "ระยะทางเฉลี่ยถึงจุดจักรยานสาธารณะ",
+        "bus_stop_mean_dist": "ระยะทางเฉลี่ยถึงป้ายรถประจำทาง",
+        "taxi_mean_dist": "ระยะทางเฉลี่ยถึงจุดรถแท็กซี่",
+        "win_mean_dist": "ระยะทางเฉลี่ยถึงวินมอเตอร์ไซค์รับจ้าง",
+        "sw_total_length": "ความยาวรวมของทางเท้า",
+        "sidewalk_length_surface_neg1": "ความยาวทางเท้าที่พื้นผิวไม่ดี",
+        "sidewalk_length_shade_neg1": "ความยาวทางเท้าที่ไม่มีร่มเงา",
+        "sidewalk_length_obstacle_neg1": "ความยาวทางเท้าที่มีสิ่งกีดขวาง",
+        "POP25": "จำนวนประชากร (ปี 2025)",
+        "PRIM25": "การสร้างการเดินทางจากงานหลัก (Primary job, 2025)",
+        "STU25": "จำนวนนักเรียน/นักศึกษา (ปี 2025)",
+    }
     const_tbl = coef_df[coef_df["variable"] == "const"].copy()
     feat_tbl = coef_df[coef_df["variable"] != "const"].copy()
     tbl = pd.concat([const_tbl, feat_tbl], ignore_index=True)
     tbl = tbl[["variable", "coef", "se", "t", "p", "ci_lo", "ci_hi", "significant"]].copy()
-    tbl.columns = ["Variable", "Coef", "Std Err", "t-stat", "p-value", "CI low (95%)", "CI high (95%)", "Significant"]
+    tbl.insert(1, "thai", tbl["variable"].map(_THAI_LABELS).fillna(""))
+    tbl.columns = ["Variable", "ตัวแปร (ภาษาไทย)", "Coef", "Std Err", "t-stat", "p-value", "CI low (95%)", "CI high (95%)", "Significant"]
 
     def _style_pval(val):
         if val < 0.01:
