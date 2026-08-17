@@ -87,7 +87,7 @@ def load_sw_dev(path: str = SW_DEV_PATH) -> dict[str, float]:
     """Load proposed sidewalk additions: {line_code: delta_meters}."""
     try:
         sw = pd.read_excel(path)
-        sw["delta_sw"] = sw["ความยาวทางเท้าที่เสนอเพิ่ม"].str.extract(r"([+-]?\d+)").astype(float)
+        sw["delta_sw"] = sw["ความยาวทางเท้าที่เสนอเพิ่ม"].str.replace(",", "", regex=False).str.extract(r"([+-]?\d+)").astype(float)
         return dict(zip(sw["รหัสสถานี"], sw["delta_sw"]))
     except Exception:
         return {}
